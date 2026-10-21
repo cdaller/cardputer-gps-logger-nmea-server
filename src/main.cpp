@@ -16,6 +16,7 @@
 #include "gps.h"
 #include "logger.h"
 #include "nmea_server.h"
+#include "version.h"
 
 static const gpio_num_t PIN_BACKLIGHT = GPIO_NUM_38;
 static const gpio_num_t PIN_WAKE_BTN = GPIO_NUM_0;  // G0 / BtnA on Cardputer and ADV
@@ -738,6 +739,10 @@ static void drawHelpPage() {
   canvas.setFont(&fonts::Font2);
   canvas.setTextColor(TFT_YELLOW);
   canvas.drawString("KEYS", 3, 20);
+  canvas.setTextColor(COL_LABEL);
+  canvas.setTextDatum(top_right);
+  canvas.drawString("GPS Logger v" FW_VERSION, 237, 20);
+  canvas.setTextDatum(top_left);
   const char* lines[] = {
     "Enter/R  start / stop logging",
     "Tab ,/  page pos/info/sat/wifi/menu",
