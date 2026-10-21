@@ -260,6 +260,19 @@ static void drawBattery(int x, int y) {
   canvas.setTextDatum(top_left);
 }
 
+// Wider battery symbol with the percentage inside, for a crowded status bar.
+static void drawBatteryCompact(int x, int y) {
+  int pct = batteryPctFromMv(batteryMvUi());
+  canvas.drawRect(x, y + 3, 30, 11, TFT_WHITE);
+  canvas.fillRect(x + 30, y + 6, 2, 5, TFT_WHITE);
+  canvas.setFont(&fonts::Font0);
+  canvas.setTextColor(pct > 50 ? TFT_GREEN : pct > 20 ? TFT_YELLOW : TFT_RED);
+  canvas.setTextDatum(middle_center);
+  canvas.drawString(String(pct) + "%", x + 15, y + 9);
+  canvas.setTextDatum(top_left);
+  canvas.setFont(&fonts::Font2);
+}
+
 static uint16_t satColor(int sats) {
   return sats >= 7 ? TFT_GREEN : sats >= 4 ? TFT_YELLOW : TFT_RED;
 }
@@ -288,23 +301,24 @@ static void drawStatusBar() {
   } else {
     int used = gps.gps().satellites.value();
     canvas.setTextColor(satColor(used));
-    canvas.drawString("SAT " + String(used) + "/" + String(gps.satsInView()), 82, 1);
+    String sats = String(used) + "/" + String(gps.satsInView());
+    canvas.drawString(nmeaserver::running() ? sats : "SAT " + sats, 82, 1);
   }
 
+  const char* sd = sdOk ? "SD" : "NOSD";
   canvas.setTextColor(sdOk ? TFT_GREEN : TFT_RED);
-  canvas.drawString(sdOk ? "SD" : "NOSD", 150, 1);
+  canvas.drawString(sd, 150, 1);
 
-  // WiFi NMEA server, small "W" with the device count below it:
-  // orange = no network, grey = no device, green = devices connected
+  // WiFi NMEA server: "W" + number of devices; orange = no network,
+  // grey = no device, green = devices connected. Needs the compact battery.
   if (nmeaserver::running()) {
     int n = nmeaserver::deviceCount();
-    canvas.setFont(&fonts::Font0);
     canvas.setTextColor(!nmeaserver::networkUp() ? TFT_ORANGE : n ? TFT_GREEN : COL_LABEL);
-    canvas.drawString("W", 169, 1);
-    if (n) canvas.drawString(String(min(n, 9)), 169, 10);
-    canvas.setFont(&fonts::Font2);
+    canvas.drawString(n ? "W" + String(min(n, 9)) : String("W"), 150 + canvas.textWidth(sd) + 4, 1);
+    drawBatteryCompact(206, 0);
+  } else {
+    drawBattery(214, 0);
   }
-  drawBattery(214, 0);
 }
 
 // Small label on the left, large value right of it.
@@ -615,7 +629,8 @@ static void drawSettingsPage() {
   canvas.drawString(editing ? "type, Enter OK, G0 cancel" : ";. select ,/ change `save", 237, 1);
   canvas.setTextDatum(top_left);
 
-  const int rows = 7, rowH = 16;
+  // Small list for the overview
+  const int rows = 4, rowH = 16;
   int first = constrain(settingsSel - rows / 2, 0, S_COUNT - rows);
   for (int i = 0; i < rows; i++) {
     int id = first + i;
@@ -626,11 +641,29 @@ static void drawSettingsPage() {
     canvas.drawString(SETTING_NAMES[id], 6, y);
     canvas.setTextColor(sel ? TFT_YELLOW : TFT_CYAN);
     canvas.setTextDatum(top_right);
-    String value = sel && editing ? editBuf + ((millis() / 400) % 2 ? "_" : " ")
-                                  : (sel ? "< " : "") + settingValue(id) + (sel ? " >" : "");
-    canvas.drawString(value, 236, y);
+    canvas.drawString(settingValue(id), 236, y);
     canvas.setTextDatum(top_left);
   }
+
+  // Selected setting in a box with its value in the large menu font
+  const int boxY = 87, maxW = 226;
+  canvas.fillRoundRect(0, boxY, 240, 135 - boxY, 5, COL_SEL);
+  canvas.setFont(&fonts::Font2);
+  canvas.setTextColor(TFT_WHITE);
+  canvas.drawString(SETTING_NAMES[settingsSel], 7, boxY + 2);
+  String value;
+  if (editing) {
+    value = editBuf;  // long input: show the end, where the cursor is
+    while (value.length() && canvas.textWidth(value + "_", &fonts::Font4) > maxW) value.remove(0, 1);
+    value += (millis() / 400) % 2 ? "_" : " ";
+  } else {
+    value = isTextSetting(settingsSel) ? settingValue(settingsSel)
+                                       : "< " + settingValue(settingsSel) + " >";
+  }
+  bool large = canvas.textWidth(value, &fonts::Font4) <= maxW;
+  canvas.setFont(large ? &fonts::Font4 : &fonts::Font2);
+  canvas.setTextColor(TFT_YELLOW);
+  canvas.drawString(value, 7, large ? boxY + 20 : boxY + 25);
 }
 
 static void drawHelpPage() {
@@ -651,10 +684,28 @@ static void drawHelpPage() {
 
 // ---------------------------------------------------------------- menu
 
-enum MenuId { M_LOGGING, M_SETTINGS, M_HELP, M_SLEEP, M_COUNT };
+enum MenuId { M_LOGGING, M_SERVER, M_SETTINGS, M_HELP, M_SLEEP, M_COUNT };
+
+// WiFi settings complete enough to start the NMEA server.
+static bool wifiConfigured() {
+  if (cfg.wifiClient) return cfg.wifiSsid.length() > 0;
+  return cfg.apSsid.length() > 0 && (cfg.apPass.length() == 0 || cfg.apPass.length() >= 8);
+}
+
+static void toggleNmeaServer() {
+  if (!cfg.nmeaServer && !wifiConfigured()) {
+    showStatus("Set up WiFi in settings first");
+    return;
+  }
+  cfg.nmeaServer = !cfg.nmeaServer;
+  if (cfg.nmeaServer) nmeaserver::begin(cfg);
+  else nmeaserver::end();
+  if (sdOk) configSave(cfg);
+  showStatus(cfg.nmeaServer ? "NMEA server started" : "NMEA server stopped");
+}
 
 static void drawMenuPage() {
-  const int rowH = 26;
+  const int rowH = 21;
   for (int id = 0; id < M_COUNT; id++) {
     int y = 20 + id * rowH;
     bool sel = id == menuSel;
@@ -665,6 +716,10 @@ static void drawMenuPage() {
         label = rtc.logging ? "Stop logging" : "Start logging";
         col = rtc.logging ? TFT_RED : TFT_GREEN;
         break;
+      case M_SERVER:
+        label = cfg.nmeaServer ? "Stop NMEA server" : "Start NMEA server";
+        col = cfg.nmeaServer ? TFT_ORANGE : TFT_SKYBLUE;
+        break;
       case M_SETTINGS: label = "Settings"; col = TFT_CYAN; break;
       case M_HELP: label = "Help / keys"; col = TFT_YELLOW; break;
       case M_SLEEP:
@@ -673,9 +728,10 @@ static void drawMenuPage() {
         break;
     }
     if (sel) canvas.fillRoundRect(2, y, 236, rowH - 2, 5, COL_SEL);
+    bool disabled = id == M_SERVER && !cfg.nmeaServer && !wifiConfigured();
     canvas.setFont(&fonts::Font4);
-    canvas.setTextColor(sel ? col : COL_LABEL);
-    canvas.drawString(label, 14, y);
+    canvas.setTextColor(disabled ? 0x4208 : sel ? col : COL_LABEL);
+    canvas.drawString(label, 14, y - 1);
   }
   canvas.setFont(&fonts::Font0);
   canvas.setTextColor(COL_LABEL);
@@ -746,6 +802,7 @@ static void openHelp() {
 static void menuSelect(int id) {
   switch (id) {
     case M_LOGGING: rtc.logging ? stopLogging() : startLogging(); break;
+    case M_SERVER: toggleNmeaServer(); break;
     case M_SETTINGS: openSettings(); break;
     case M_HELP: openHelp(); break;
     case M_SLEEP: sleepNowIfPossible(); break;

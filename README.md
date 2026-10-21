@@ -9,8 +9,8 @@ in large colored digits, and uses deep sleep between points to save battery.
 - Large display: latitude, longitude, altitude, local time, satellites (used / in view)
 - Status bar: recording state + point count, GPS state, SD state, battery level
 - Details page: speed, course, HDOP, fix age, NMEA statistics, log file, battery voltage
-- Menu page: start/stop logging, settings, help, screen off / deep sleep - no need to
-  remember key letters
+- Menu page: start/stop logging, start/stop NMEA server, settings, help, screen off /
+  deep sleep - no need to remember key letters
 - Logging to `/gpslogger/tracks/YYYYMMDD_HHMMSS.csv` / `.gpx` (UTC time stamps).
   The GPX file is closed after every point, so it stays valid if power is lost.
 - Optional raw NMEA log (`.nmea` next to the track): all sentences from the GPS,
@@ -123,7 +123,8 @@ to all TCP clients connected to `nmea_port` (up to 4) and as UDP broadcast to th
 In the Garmin Boating app: *Menu > Paired devices > + > Add device*, enter
 host = the address above, port = `nmea_port` (default 2000) and TCP or UDP.
 
-The status bar shows a small **W** while the server runs: orange = no network yet,
+While the server runs, the status bar is compacted (satellites without `SAT`, battery
+percentage inside the battery symbol) and shows **W**: orange = no network yet,
 grey = no device, green with a number = connected devices (TCP clients; in AP mode also
 devices that joined the network - pure UDP listeners in client mode can't be detected).
 The WiFi page (after the details page) shows network name, AP password or connection
