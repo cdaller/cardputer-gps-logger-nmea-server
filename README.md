@@ -68,7 +68,7 @@ Every build writes two files to `dist/`:
 | Key (keyboard)     | Action                                  |
 |--------------------|-----------------------------------------|
 | `Enter` / `R`      | start / stop logging                    |
-| `Tab`, `/` , `,`   | switch page: position -> details -> menu |
+| `Tab`, `/` , `,`   | switch page: position -> details -> WiFi -> menu (WiFi only with NMEA server on) |
 | `;` `.` + `Enter`  | menu page: select item (up/down arrow keys) and run it |
 | `S`                | settings (`;` `.` select, `,` `/` change, `` ` `` / `Del` save & exit) |
 | `H`                | help                                    |
@@ -126,7 +126,8 @@ host = the address above, port = `nmea_port` (default 2000) and TCP or UDP.
 The status bar shows a small **W** while the server runs: orange = no network yet,
 grey = no device, green with a number = connected devices (TCP clients; in AP mode also
 devices that joined the network - pure UDP listeners in client mode can't be detected).
-The details page shows address, port and counts. Deep sleep is disabled while the server is
+The WiFi page (after the details page) shows network name, AP password or connection
+status, address, port and connected devices. Deep sleep is disabled while the server is
 on, and WiFi increases the power consumption considerably.
 
 ## Deep sleep

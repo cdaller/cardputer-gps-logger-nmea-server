@@ -78,38 +78,41 @@ void put(char c) {
   lineLen = 0;
 }
 
-static int tcpCount() {
+int tcpClients() {
   int n = 0;
   for (auto& c : clients) n += c.connected();
   return n;
 }
 
-String statusText() {
-  if (!isRunning) return "off";
-  IPAddress ip;
-  if (apMode) {
-    ip = WiFi.softAPIP();
-  } else {
-    switch (WiFi.status()) {
-      case WL_CONNECTED: ip = WiFi.localIP(); break;
-      case WL_NO_SSID_AVAIL: return "network not found";
-      case WL_CONNECT_FAILED: return "connect failed";
-      default: return "connecting...";
-    }
-  }
-  String s = ip.toString() + ":" + String(port) + " tcp:" + String(tcpCount());
-  if (apMode) s += " ap:" + String(WiFi.softAPgetStationNum());
-  return s;
-}
+int apStations() { return isRunning && apMode ? WiFi.softAPgetStationNum() : 0; }
 
 bool running() { return isRunning; }
 
 bool networkUp() { return isRunning && (apMode || WiFi.status() == WL_CONNECTED); }
 
-int deviceCount() {
-  if (!isRunning) return 0;
-  int n = tcpCount();
-  return apMode ? max(n, (int)WiFi.softAPgetStationNum()) : n;
+String stateText() {
+  if (!isRunning) return "off";
+  if (apMode) return "running";
+  switch (WiFi.status()) {
+    case WL_CONNECTED: return "connected";
+    case WL_NO_SSID_AVAIL: return "network not found";
+    case WL_CONNECT_FAILED: return "connect failed";
+    default: return "connecting...";
+  }
 }
+
+String ipText() {
+  if (!networkUp()) return "";
+  return (apMode ? WiFi.softAPIP() : WiFi.localIP()).toString();
+}
+
+String statusText() {
+  if (!networkUp()) return stateText();
+  String s = ipText() + ":" + String(port) + " tcp:" + String(tcpClients());
+  if (apMode) s += " ap:" + String(apStations());
+  return s;
+}
+
+int deviceCount() { return max(tcpClients(), apStations()); }
 
 }  // namespace nmeaserver

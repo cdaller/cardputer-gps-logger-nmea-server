@@ -38,8 +38,9 @@ struct RtcState {
 };
 RTC_DATA_ATTR RtcState rtc;
 
-enum Page { PAGE_MAIN, PAGE_DETAILS, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP };
-static const int PAGE_CYCLE_COUNT = 3;  // MAIN, DETAILS, MENU are switched with Tab / G0
+enum Page { PAGE_MAIN, PAGE_DETAILS, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP };
+// MAIN, DETAILS, WIFI, MENU are switched with Tab / G0; WIFI only with the NMEA server on
+static const int PAGE_CYCLE_COUNT = 4;
 
 static Config cfg;
 static GpsReader gps;
@@ -396,6 +397,46 @@ static void drawDetailsPage() {
        nmeaserver::statusText().c_str());
 }
 
+// Label in grey, value in color, one Font2 line.
+static void drawLabeled(int y, const char* label, const String& value, uint16_t color) {
+  canvas.setFont(&fonts::Font2);
+  canvas.setTextColor(COL_LABEL);
+  canvas.drawString(label, 3, y);
+  canvas.setTextColor(color);
+  canvas.drawString(value, 72, y);
+}
+
+static void drawWifiPage() {
+  bool up = nmeaserver::networkUp();
+  canvas.setFont(&fonts::Font2);
+  canvas.setTextColor(TFT_SKYBLUE);
+  canvas.drawString(cfg.wifiClient ? "NMEA SERVER - joins WiFi" : "NMEA SERVER - own WiFi", 3, 20);
+
+  if (cfg.wifiClient) {
+    drawLabeled(37, "Network", cfg.wifiSsid.length() ? cfg.wifiSsid : String("(not set)"), TFT_WHITE);
+    String state = nmeaserver::stateText();
+    drawLabeled(53, "Status", state, up ? TFT_GREEN : state == "connecting..." ? TFT_ORANGE : TFT_RED);
+  } else {
+    drawLabeled(37, "Network", cfg.apSsid, TFT_WHITE);
+    drawLabeled(53, "Password", cfg.apPass.length() ? cfg.apPass : String("(open)"), TFT_WHITE);
+  }
+
+  // Address in large digits: this is what goes into the app
+  canvas.setFont(&fonts::Font0);
+  canvas.setTextColor(COL_LABEL);
+  canvas.drawString("HOST", 3, 79);
+  canvas.setFont(&fonts::Font4);
+  canvas.setTextColor(up ? TFT_CYAN : COL_NOFIX);
+  canvas.drawString(up ? nmeaserver::ipText() : String("--"), 30, 70);
+
+  drawLabeled(97, "Port", String(cfg.nmeaPort) + "  (TCP + UDP)", TFT_YELLOW);
+
+  int tcp = nmeaserver::tcpClients();
+  String devices = "TCP " + String(tcp);
+  if (!cfg.wifiClient) devices += ", in WiFi " + String(nmeaserver::apStations());
+  drawLabeled(113, "Devices", devices, nmeaserver::deviceCount() ? TFT_GREEN : COL_LABEL);
+}
+
 // ---------------------------------------------------------------- settings
 
 enum SettingId {
@@ -561,7 +602,7 @@ static void closeSettings() {
   }
   if (sdOk && configSave(cfg)) showStatus("Settings saved to SD");
   else showStatus("No SD: settings not saved");
-  page = returnPage;
+  page = returnPage == PAGE_WIFI && !cfg.nmeaServer ? PAGE_MAIN : returnPage;
 }
 
 static void drawSettingsPage() {
@@ -598,7 +639,7 @@ static void drawHelpPage() {
   canvas.drawString("KEYS", 3, 20);
   const char* lines[] = {
     "Enter/R  start / stop logging",
-    "Tab / ,/  page (pos/info/menu)",
+    "Tab / ,/  page (pos/info/wifi/menu)",
     "S  settings   H  this help",
     "Z  screen off / sleep now",
     "G0 click: page  hold: rec",
@@ -650,6 +691,7 @@ static void draw() {
     drawStatusBar();
     if (page == PAGE_MAIN) drawMainPage();
     else if (page == PAGE_DETAILS) drawDetailsPage();
+    else if (page == PAGE_WIFI) drawWifiPage();
     else if (page == PAGE_MENU) drawMenuPage();
     else drawHelpPage();
   }
@@ -691,7 +733,9 @@ static void sleepNowIfPossible() {
 }
 
 static void nextPage(int dir) {
-  page = (Page)((page + PAGE_CYCLE_COUNT + dir) % PAGE_CYCLE_COUNT);
+  do {
+    page = (Page)((page + PAGE_CYCLE_COUNT + dir) % PAGE_CYCLE_COUNT);
+  } while (page == PAGE_WIFI && !cfg.nmeaServer);
 }
 
 static void openHelp() {
