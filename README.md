@@ -106,6 +106,7 @@ to the `creator` attribute of GPX files.
 | `S`                | settings (`;` `.` select, `,` `/` change, `` ` `` / `Del` save & exit) |
 | `H`                | help                                    |
 | `Z`                | screen off now (or deep sleep, if active) |
+| `P`                | screenshot of the current page as BMP to `/gpslogger/screenshots/` |
 | **G0 click**       | next page / leave settings / help       |
 | **G0 hold**        | start / stop logging                    |
 

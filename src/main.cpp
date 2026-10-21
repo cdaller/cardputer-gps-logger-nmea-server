@@ -831,7 +831,7 @@ static void drawHelpPage() {
     "Enter/R  start / stop logging",
     "Tab ,/ 1-7  page (1 pos .. 7 menu)",
     "S  settings   H  this help",
-    "Z  screen off / sleep now",
+    "Z  screen off/sleep   P  screenshot",
     "G0 click: page  hold: rec",
     "G0 wakes from deep sleep",
   };
@@ -925,6 +925,46 @@ static void draw() {
   canvas.pushSprite(0, 0);
 }
 
+// Saves the current page (without status message) as 24-bit BMP to the SD
+// card, row by row: PNG compression needs more RAM than is free.
+static void saveScreenshot() {
+  if (!sdOk) { showStatus("No SD card!"); return; }
+  statusMsgUntil = 0;
+  draw();
+  SD.mkdir("/gpslogger");
+  SD.mkdir("/gpslogger/screenshots");
+  char path[48];
+  for (int i = 1; i < 10000; i++) {
+    snprintf(path, sizeof(path), "/gpslogger/screenshots/%04d.bmp", i);
+    if (!SD.exists(path)) break;
+  }
+  File f = SD.open(path, FILE_WRITE);
+  if (!f) { showStatus("SD write error!"); return; }
+
+  const int w = 240, h = 135;
+  const uint32_t rowBytes = w * 3, imageBytes = rowBytes * h;  // 720: no row padding needed
+  uint8_t hdr[54] = {'B', 'M'};
+  auto put32 = [&](int at, uint32_t v) { for (int i = 0; i < 4; i++) hdr[at + i] = v >> (8 * i); };
+  put32(2, sizeof(hdr) + imageBytes);  // file size
+  put32(10, sizeof(hdr));              // pixel data offset
+  put32(14, 40);                       // info header size
+  put32(18, w);
+  put32(22, h);                        // positive: rows bottom-up
+  hdr[26] = 1;                         // planes
+  hdr[28] = 24;                        // bits per pixel
+  put32(34, imageBytes);
+  bool ok = f.write(hdr, sizeof(hdr)) == sizeof(hdr);
+
+  static uint8_t row[w * 3];
+  for (int y = h - 1; ok && y >= 0; y--) {
+    canvas.readRectRGB(0, y, w, 1, row);  // R, G, B
+    for (int x = 0; x < w; x++) std::swap(row[x * 3], row[x * 3 + 2]);  // BMP wants B, G, R
+    ok = f.write(row, rowBytes) == rowBytes;
+  }
+  f.close();
+  showStatus(ok ? (String("Saved ") + (strrchr(path, '/') + 1)).c_str() : "SD write error!");
+}
+
 // ---------------------------------------------------------------- screen / input
 
 static void setScreen(bool on) {
@@ -1003,6 +1043,7 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
   else if (c == 's') openSettings();
   else if (c == 'h') openHelp();
   else if (c == 'z') sleepNowIfPossible();
+  else if (c == 'p') saveScreenshot();
 }
 
 static void handleInput() {
