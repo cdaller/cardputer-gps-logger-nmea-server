@@ -1,0 +1,51 @@
+#pragma once
+#include <Arduino.h>
+
+// Known GPS modules. Selecting one in the settings copies its RX/TX/baud
+// into the config; "Custom" leaves the pins as they are.
+enum GpsModule : uint8_t {
+  GPS_CAP_LORA1262 = 0,  // Cap LoRa-1262 on Cardputer ADV EXT header (ATGM336H)
+  GPS_UNIT_V11,          // M5 Unit GPS v1.1 (AT6668) on Grove
+  GPS_UNIT_AT6558,       // M5 Unit GPS (AT6558, older) on Grove
+  GPS_GROVE_NMEA,        // Generic NMEA module (NEO-6M/M8N, ...) on Grove
+  GPS_CUSTOM,
+  GPS_MODULE_COUNT
+};
+
+struct GpsPreset {
+  const char* key;    // used in config file
+  const char* name;   // shown on screen
+  int8_t rx;          // Cardputer RX <- GPS TX
+  int8_t tx;          // Cardputer TX -> GPS RX
+  uint32_t baud;      // 0 = auto detect
+};
+
+extern const GpsPreset GPS_PRESETS[GPS_MODULE_COUNT];
+
+enum LogFormat : uint8_t { LOG_CSV = 0, LOG_GPX, LOG_CSV_GPX, LOG_FORMAT_COUNT };
+extern const char* const LOG_FORMAT_NAMES[LOG_FORMAT_COUNT];
+
+struct Config {
+  uint8_t gpsModule = GPS_UNIT_V11;
+  int8_t gpsRx = 1;
+  int8_t gpsTx = 2;
+  uint32_t gpsBaud = 115200;      // 0 = auto
+  uint32_t logIntervalSec = 5;
+  uint8_t logFormat = LOG_CSV_GPX;
+  bool deepSleep = false;
+  uint16_t screenTimeoutSec = 60; // 0 = never
+  uint16_t fixTimeoutSec = 60;    // max. time to wait for a fix after waking up
+  int8_t tzOffsetHours = 0;
+  bool autoStart = false;
+  uint8_t brightness = 128;
+
+  void applyPreset(uint8_t module);
+};
+
+// Config lives in a plain text file on the SD card, so it survives
+// flashing other firmware via the launcher and can be edited on a PC.
+#define CONFIG_PATH "/gpslogger/config.txt"
+
+void configDefaults(Config& cfg, bool isAdv);
+bool configLoad(Config& cfg);        // false if no file (cfg unchanged)
+bool configSave(const Config& cfg);
