@@ -1,11 +1,19 @@
-# Cardputer GPS Logger
+# Cardputer GPS Logger / NMEA Server
 
-GPS track logger for the **M5Stack Cardputer ADV** (also runs on Cardputer v1.x).
-Logs to micro SD as CSV and/or GPX, shows position, altitude, time and satellites
-in large colored digits, and uses deep sleep between points to save battery.
+GPS track logger and **WiFi NMEA server** for the **M5Stack Cardputer ADV** (also runs on
+Cardputer v1.x).
+
+- **Logger:** logs to micro SD as CSV and/or GPX, shows position, altitude, speed, time and
+  satellites in large colored digits, and uses deep sleep between points to save battery.
+- **NMEA server:** turns the Cardputer into a wireless GPS for phones, tablets and PCs: the
+  NMEA sentences are sent over WiFi (TCP + UDP) to chart and navigation apps like Garmin
+  Boating - in its own WiFi network or in an existing one. Works at the same time as
+  logging (deep sleep is off while the server runs). See [NMEA server](#nmea-server-for-eg-garmin-boating-app) below.
 
 ## Features
 
+- NMEA server over WiFi (TCP + UDP) for chart apps like Garmin Boating, either with its
+  own WiFi network or in an existing one
 - Large display: latitude, longitude, altitude, local time, satellites (used / in view)
 - Status bar: recording state + point count, satellite reception (FIX / NO FIX, used / in
   view), NMEA server (`↑ NMEA`), missing SD card, battery level (percentage left out if the
@@ -26,13 +34,24 @@ in large colored digits, and uses deep sleep between points to save battery.
   buffered in RAM and written in 4 KB chunks (up to 4 KB are lost on power loss)
 - Configurable log interval (1 s … 1 h), format, time zone, brightness, timeouts
 - Deep sleep between points while logging (interval >= 15 s)
-- NMEA server over WiFi (TCP + UDP) for chart apps like Garmin Boating, either with its
-  own WiFi network or in an existing one
 - GPS module presets plus custom RX/TX pins and baud rate, or automatic baud detection
 - Keyboard control when a keyboard is detected (matrix keyboard on v1.x, TCA8418 on ADV);
   without keyboard the G0 button still works
 - Configuration stored as a text file on the SD card (`/gpslogger/config.txt`), so it
   survives installing other firmware via the Launcher and can be edited on a PC
+
+## Supported hardware
+
+| Device                         | Notes                                                     |
+|--------------------------------|-----------------------------------------------------------|
+| M5Stack Cardputer ADV          | main target; keyboard via TCA8418, CAP LoRa-1262 GPS on the EXT header |
+| M5Stack Cardputer v1.0 / v1.1  | matrix keyboard; GPS on the Grove port                    |
+
+The model is detected at runtime, one firmware image runs on all of them. The firmware is
+built for the ESP32-S3 (StampS3, 8 MB flash) and uses the Cardputer's display (240 x 135),
+SD card slot, battery ADC and keyboard pins, so it does not run on other M5Stack or
+ESP32 devices without changes. A micro SD card is needed for logging and for saving the
+settings.
 
 ## Supported GPS modules
 
@@ -124,7 +143,7 @@ WiFi names and passwords can also be typed in the settings page: select the entr
 `Enter`, type, `Enter` to accept (`Del` deletes, G0 cancels). They are stored in plain text
 in `config.txt`.
 
-## NMEA server (Garmin Boating app)
+## NMEA server (for e.g. Garmin Boating app)
 
 With `nmea_server=1` the Cardputer sends every NMEA sentence from the GPS over WiFi:
 to all TCP clients connected to `nmea_port` (up to 4) and as UDP broadcast to the same port.
