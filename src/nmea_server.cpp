@@ -4,9 +4,18 @@
 #include <lwip/sockets.h>
 
 static const int MAX_CLIENTS = 4;
+static const uint32_t TCP_FLUSH_GAP_MS = 20;     // pause that ends a GPS burst
+static const uint32_t TCP_STALL_DROP_MS = 5000;  // client not reading for this long is dropped
 
 static WiFiServer server;
 static WiFiClient clients[MAX_CLIENTS];
+static bool alive[MAX_CLIENTS];  // slot holds a connected client
+static uint32_t blockedSince[MAX_CLIENTS];  // send buffer full since, 0 = not blocked
+// Sentences of one GPS burst are collected and sent as one TCP segment: one
+// segment per sentence overflows lwIP's per-connection queue (~16 segments).
+static char tcpBuf[1400];
+static size_t tcpLen = 0;
+static uint32_t lastLineMs = 0;
 static WiFiUDP udp;
 static bool isRunning = false;
 static bool apMode = false;
@@ -31,12 +40,16 @@ void begin(const Config& cfg) {
   server.begin(port);
   server.setNoDelay(true);
   lineLen = 0;
+  tcpLen = 0;
   isRunning = true;
 }
 
 void end() {
   if (!isRunning) return;
-  for (auto& c : clients) c.stop();
+  for (int i = 0; i < MAX_CLIENTS; i++) {
+    clients[i].stop();
+    alive[i] = false;
+  }
   server.end();
   udp.stop();
   WiFi.disconnect(true);
@@ -44,12 +57,55 @@ void end() {
   isRunning = false;
 }
 
+static void drop(int i) {
+  clients[i].stop();
+  alive[i] = false;
+  blockedSince[i] = 0;
+}
+
+static void flushTcp() {
+  if (tcpLen == 0) return;
+  uint32_t now = millis() | 1;  // never 0, which means "not blocked"
+  for (int i = 0; i < MAX_CLIENTS; i++) {
+    if (!alive[i]) continue;
+    int n = lwip_send(clients[i].fd(), tcpBuf, tcpLen, MSG_DONTWAIT);
+    if (n >= 0) {  // a partial send only cuts one sentence, the app drops it by checksum
+      blockedSince[i] = 0;
+    } else if (errno != EWOULDBLOCK && errno != EAGAIN) {
+      drop(i);
+    } else if (!blockedSince[i]) {  // send buffer full: skip this chunk for the client
+      blockedSince[i] = now;
+    } else if (now - blockedSince[i] > TCP_STALL_DROP_MS) {
+      drop(i);  // stopped reading, e.g. out of WiFi range
+    }
+  }
+  tcpLen = 0;
+}
+
+// WiFiClient::connected() can't be used: it calls recv() with length 0, which
+// leaves errno untouched, so the result depends on an unrelated earlier error.
+// Check the socket directly instead; data sent by the client is discarded.
+static bool checkAlive(WiFiClient& c) {
+  char buf[64];
+  int n = lwip_recv(c.fd(), buf, sizeof(buf), MSG_DONTWAIT);
+  if (n > 0) return true;
+  if (n == 0) return false;  // closed by the client
+  return errno == EWOULDBLOCK || errno == EAGAIN;
+}
+
 void update() {
-  if (!isRunning || !server.hasClient()) return;
+  if (!isRunning) return;
+  for (int i = 0; i < MAX_CLIENTS; i++) {
+    if (alive[i] && !checkAlive(clients[i])) drop(i);
+  }
+  if (tcpLen && millis() - lastLineMs >= TCP_FLUSH_GAP_MS) flushTcp();
+  if (!server.hasClient()) return;
   WiFiClient c = server.available();
-  for (auto& slot : clients) {
-    if (!slot.connected()) {
-      slot = c;
+  if (c.fd() < 0) return;
+  for (int i = 0; i < MAX_CLIENTS; i++) {
+    if (!alive[i]) {
+      clients[i] = c;
+      alive[i] = true;
       return;
     }
   }
@@ -57,11 +113,10 @@ void update() {
 }
 
 static void sendLine(const char* data, size_t len) {
-  for (auto& c : clients) {
-    // Non-blocking: a client that stopped reading (e.g. out of WiFi range) fills
-    // the send buffer; drop it instead of blocking the main loop.
-    if (c.connected() && lwip_send(c.fd(), data, len, MSG_DONTWAIT) != (int)len) c.stop();
-  }
+  if (tcpLen + len > sizeof(tcpBuf)) flushTcp();
+  memcpy(tcpBuf + tcpLen, data, len);
+  tcpLen += len;
+  lastLineMs = millis();
   if (apMode || WiFi.status() == WL_CONNECTED) {
     udp.beginPacket(apMode ? WiFi.softAPBroadcastIP() : WiFi.broadcastIP(), port);
     udp.write((const uint8_t*)data, len);
@@ -80,7 +135,7 @@ void put(char c) {
 
 int tcpClients() {
   int n = 0;
-  for (auto& c : clients) n += c.connected();
+  for (bool a : alive) n += a;
   return n;
 }
 
