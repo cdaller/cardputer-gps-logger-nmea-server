@@ -39,6 +39,13 @@ struct Config {
   int8_t tzOffsetHours = 0;
   bool autoStart = false;
   uint8_t brightness = 128;
+  bool nmeaServer = false;        // serve NMEA over WiFi (TCP + UDP)
+  bool wifiClient = false;        // false: own access point, true: join wifiSsid
+  String wifiSsid;
+  String wifiPass;
+  String apSsid = "GPS-Logger";
+  String apPass = "gpslogger";    // empty = open network, else min. 8 characters
+  uint16_t nmeaPort = 2000;
 
   void applyPreset(uint8_t module);
 };

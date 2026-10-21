@@ -55,6 +55,13 @@ bool configLoad(Config& cfg) {
     else if (key == "tz_offset") cfg.tzOffsetHours = constrain(n, -12, 14);
     else if (key == "auto_start") cfg.autoStart = n != 0;
     else if (key == "brightness") cfg.brightness = constrain(n, 8, 255);
+    else if (key == "nmea_server") cfg.nmeaServer = n != 0;
+    else if (key == "wifi_mode") cfg.wifiClient = val.equalsIgnoreCase("client");
+    else if (key == "wifi_ssid") cfg.wifiSsid = val;
+    else if (key == "wifi_pass") cfg.wifiPass = val;
+    else if (key == "ap_ssid" && val.length()) cfg.apSsid = val;
+    else if (key == "ap_pass") cfg.apPass = val;
+    else if (key == "nmea_port" && n >= 1 && n <= 65535) cfg.nmeaPort = n;
   }
   f.close();
   return true;
@@ -88,6 +95,16 @@ bool configSave(const Config& cfg) {
   f.println("# 1 = start logging automatically after power on");
   f.printf("auto_start=%d\n", cfg.autoStart ? 1 : 0);
   f.printf("brightness=%u\n", cfg.brightness);
+  f.println("# 1 = send the GPS NMEA sentences over WiFi (TCP server + UDP broadcast)");
+  f.printf("nmea_server=%d\n", cfg.nmeaServer ? 1 : 0);
+  f.println("# ap = own WiFi network (ap_ssid/ap_pass), client = join wifi_ssid/wifi_pass");
+  f.printf("wifi_mode=%s\n", cfg.wifiClient ? "client" : "ap");
+  f.printf("wifi_ssid=%s\n", cfg.wifiSsid.c_str());
+  f.printf("wifi_pass=%s\n", cfg.wifiPass.c_str());
+  f.println("# ap_pass: empty = open network, otherwise at least 8 characters");
+  f.printf("ap_ssid=%s\n", cfg.apSsid.c_str());
+  f.printf("ap_pass=%s\n", cfg.apPass.c_str());
+  f.printf("nmea_port=%u\n", cfg.nmeaPort);
   f.close();
   return true;
 }

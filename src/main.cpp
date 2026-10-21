@@ -15,6 +15,7 @@
 #include "config.h"
 #include "gps.h"
 #include "logger.h"
+#include "nmea_server.h"
 
 static const gpio_num_t PIN_BACKLIGHT = GPIO_NUM_38;
 static const gpio_num_t PIN_WAKE_BTN = GPIO_NUM_0;  // G0 / BtnA on Cardputer and ADV
@@ -55,6 +56,9 @@ static bool screenOn = true;
 static char statusMsg[40] = "";
 static uint32_t statusMsgUntil = 0;
 static int settingsSel = 0;
+static bool editing = false;   // text input for the selected setting
+static String editBuf;
+static int lastDeviceCount = 0;
 static Config cfgBeforeEdit;
 
 // ---------------------------------------------------------------- colors
@@ -97,7 +101,8 @@ static void showStatus(const char* msg, uint32_t ms = 2500) {
 }
 
 static bool canDeepSleep() {
-  return rtc.logging && cfg.deepSleep && cfg.logIntervalSec >= MIN_SLEEP_INTERVAL_SEC && sdOk;
+  return rtc.logging && cfg.deepSleep && cfg.logIntervalSec >= MIN_SLEEP_INTERVAL_SEC && sdOk &&
+         !cfg.nmeaServer;  // WiFi would be off while sleeping
 }
 
 static uint32_t effectiveBaud() {
@@ -108,6 +113,7 @@ static uint32_t effectiveBaud() {
 // (no file name yet) are dropped.
 static void nmeaSink(char c) {
   if (rtc.logging && cfg.logNmea && sdOk && rtc.baseName[0]) logger::nmeaPut(c, rtc.baseName);
+  nmeaserver::put(c);
 }
 
 static void startGps() {
@@ -286,6 +292,17 @@ static void drawStatusBar() {
 
   canvas.setTextColor(sdOk ? TFT_GREEN : TFT_RED);
   canvas.drawString(sdOk ? "SD" : "NOSD", 150, 1);
+
+  // WiFi NMEA server, small "W" with the device count below it:
+  // orange = no network, grey = no device, green = devices connected
+  if (nmeaserver::running()) {
+    int n = nmeaserver::deviceCount();
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(!nmeaserver::networkUp() ? TFT_ORANGE : n ? TFT_GREEN : COL_LABEL);
+    canvas.drawString("W", 169, 1);
+    if (n) canvas.drawString(String(min(n, 9)), 169, 10);
+    canvas.setFont(&fonts::Font2);
+  }
   drawBattery(214, 0);
 }
 
@@ -349,7 +366,7 @@ static void drawMainPage() {
 static void drawDetailsPage() {
   TinyGPSPlus& g = gps.gps();
   canvas.setFont(&fonts::Font2);
-  int y = 21;
+  int y = 20;
   auto line = [&](uint16_t col, const char* fmt, ...) {
     char buf[64];
     va_list ap;
@@ -358,7 +375,7 @@ static void drawDetailsPage() {
     va_end(ap);
     canvas.setTextColor(col);
     canvas.drawString(buf, 3, y);
-    y += 16;
+    y += 14;
   };
   line(TFT_CYAN, "Speed %.1f km/h  Course %.0f", g.speed.kmph(), g.course.deg());
   line(TFT_GREEN, "HDOP %.2f  Sats %lu/%d  Age %lus", g.hdop.hdop(),
@@ -375,17 +392,21 @@ static void drawDetailsPage() {
   int mv = batteryMvUi();
   line(TFT_GREEN, "Battery %.2fV %d%%  %s", mv / 1000.0f, batteryPctFromMv(mv),
        hasKeyboard ? "KB" : "no KB");
+  line(TFT_SKYBLUE, "WiFi %s %s", !nmeaserver::running() ? "" : cfg.wifiClient ? "client" : "AP",
+       nmeaserver::statusText().c_str());
 }
 
 // ---------------------------------------------------------------- settings
 
 enum SettingId {
   S_INTERVAL, S_FORMAT, S_NMEA, S_SLEEP, S_SCREEN, S_FIXTO, S_MODULE, S_RX, S_TX, S_BAUD,
+  S_SERVER, S_WIFIMODE, S_PORT, S_SSID, S_PASS, S_APSSID, S_APPASS,
   S_TZ, S_AUTOSTART, S_BRIGHT, S_COUNT
 };
 static const char* const SETTING_NAMES[S_COUNT] = {
   "Log interval", "Log format", "NMEA log", "Deep sleep", "Screen timeout", "Fix timeout", "GPS module",
-  "GPS RX pin", "GPS TX pin", "GPS baud", "Time zone", "Auto start", "Brightness",
+  "GPS RX pin", "GPS TX pin", "GPS baud", "NMEA server", "WiFi mode", "NMEA port",
+  "WiFi SSID", "WiFi password", "AP name", "AP password", "Time zone", "Auto start", "Brightness",
 };
 static const uint32_t INTERVALS[] = {1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600};
 static const uint32_t SCREEN_TOS[] = {0, 15, 30, 60, 120, 300};
@@ -416,6 +437,7 @@ static String settingValue(int id) {
     case S_NMEA: return cfg.logNmea ? "on" : "off";
     case S_SLEEP:
       if (!cfg.deepSleep) return "off";
+      if (cfg.nmeaServer) return "on (WiFi on)";
       return cfg.logIntervalSec >= MIN_SLEEP_INTERVAL_SEC ? "on" : "on (int<15s)";
     case S_SCREEN: return secondsText(cfg.screenTimeoutSec);
     case S_FIXTO: return secondsText(cfg.fixTimeoutSec);
@@ -430,8 +452,64 @@ static String settingValue(int id) {
     case S_TZ: return "UTC" + String(cfg.tzOffsetHours >= 0 ? "+" : "") + String(cfg.tzOffsetHours);
     case S_AUTOSTART: return cfg.autoStart ? "on" : "off";
     case S_BRIGHT: return String(cfg.brightness * 100 / 255) + " %";
+    case S_SERVER: return cfg.nmeaServer ? "on" : "off";
+    case S_WIFIMODE: return cfg.wifiClient ? "client" : "own AP";
+    case S_PORT: return String(cfg.nmeaPort);
+    case S_SSID: return cfg.wifiSsid.length() ? cfg.wifiSsid : String("-");
+    case S_PASS: return cfg.wifiPass.length() ? String("****") : String("-");
+    case S_APSSID: return cfg.apSsid;
+    case S_APPASS: return cfg.apPass.length() ? String("****") : String("(open)");
   }
   return "";
+}
+
+// ---- text input for SSIDs, passwords and the port
+
+static String* textSetting(int id) {
+  switch (id) {
+    case S_SSID: return &cfg.wifiSsid;
+    case S_PASS: return &cfg.wifiPass;
+    case S_APSSID: return &cfg.apSsid;
+    case S_APPASS: return &cfg.apPass;
+  }
+  return nullptr;
+}
+
+static bool isTextSetting(int id) { return id == S_PORT || textSetting(id); }
+
+static void startEdit() {
+  editing = true;
+  editBuf = settingsSel == S_PORT ? String(cfg.nmeaPort) : *textSetting(settingsSel);
+}
+
+static void finishEdit() {
+  if (settingsSel == S_PORT) {
+    long p = editBuf.toInt();
+    if (p < 1 || p > 65535) { showStatus("Port must be 1-65535"); return; }
+    cfg.nmeaPort = p;
+  } else if (settingsSel == S_APSSID && editBuf.length() == 0) {
+    showStatus("AP name must not be empty");
+    return;
+  } else if (settingsSel == S_APPASS && editBuf.length() && editBuf.length() < 8) {
+    showStatus("Min. 8 characters (or empty)");
+    return;
+  } else {
+    *textSetting(settingsSel) = editBuf;
+  }
+  editing = false;
+}
+
+static void handleEditKey(const std::vector<char>& word, bool enter, bool del) {
+  if (enter) {
+    finishEdit();
+  } else if (del) {
+    if (editBuf.length()) editBuf.remove(editBuf.length() - 1);
+  } else {
+    size_t maxLen = settingsSel == S_PORT ? 5 : (settingsSel == S_SSID || settingsSel == S_APSSID) ? 32 : 63;
+    for (char c : word) {
+      if (editBuf.length() < maxLen && (settingsSel != S_PORT || isdigit(c))) editBuf += c;
+    }
+  }
 }
 
 static void changeSetting(int id, int dir) {
@@ -448,6 +526,8 @@ static void changeSetting(int id, int dir) {
     case S_BAUD: cfg.gpsBaud = cycle(BAUDS, cfg.gpsBaud, dir); break;
     case S_TZ: cfg.tzOffsetHours = constrain(cfg.tzOffsetHours + dir, -12, 14); break;
     case S_AUTOSTART: cfg.autoStart = !cfg.autoStart; break;
+    case S_SERVER: cfg.nmeaServer = !cfg.nmeaServer; break;
+    case S_WIFIMODE: cfg.wifiClient = !cfg.wifiClient; break;
     case S_BRIGHT:
       cfg.brightness = cycle(BRIGHTS, cfg.brightness, dir);
       M5.Display.setBrightness(cfg.brightness);
@@ -457,6 +537,7 @@ static void changeSetting(int id, int dir) {
 
 static void openSettings() {
   cfgBeforeEdit = cfg;
+  editing = false;
   settingsSel = 0;
   returnPage = page;
   page = PAGE_SETTINGS;
@@ -468,6 +549,15 @@ static void closeSettings() {
   if (gpsChanged) {
     rtc.detectedBaud = 0;
     startGps();
+  }
+  bool wifiChanged = cfg.nmeaServer != cfgBeforeEdit.nmeaServer ||
+                     cfg.wifiClient != cfgBeforeEdit.wifiClient ||
+                     cfg.nmeaPort != cfgBeforeEdit.nmeaPort || cfg.wifiSsid != cfgBeforeEdit.wifiSsid ||
+                     cfg.wifiPass != cfgBeforeEdit.wifiPass || cfg.apSsid != cfgBeforeEdit.apSsid ||
+                     cfg.apPass != cfgBeforeEdit.apPass;
+  if (wifiChanged) {
+    if (cfg.nmeaServer) nmeaserver::begin(cfg);
+    else nmeaserver::end();
   }
   if (sdOk && configSave(cfg)) showStatus("Settings saved to SD");
   else showStatus("No SD: settings not saved");
@@ -481,7 +571,7 @@ static void drawSettingsPage() {
   canvas.drawString("SETTINGS", 3, 1);
   canvas.setTextColor(COL_LABEL);
   canvas.setTextDatum(top_right);
-  canvas.drawString(";. select ,/ change `save", 237, 1);
+  canvas.drawString(editing ? "type, Enter OK, G0 cancel" : ";. select ,/ change `save", 237, 1);
   canvas.setTextDatum(top_left);
 
   const int rows = 7, rowH = 16;
@@ -495,7 +585,9 @@ static void drawSettingsPage() {
     canvas.drawString(SETTING_NAMES[id], 6, y);
     canvas.setTextColor(sel ? TFT_YELLOW : TFT_CYAN);
     canvas.setTextDatum(top_right);
-    canvas.drawString((sel ? "< " : "") + settingValue(id) + (sel ? " >" : ""), 236, y);
+    String value = sel && editing ? editBuf + ((millis() / 400) % 2 ? "_" : " ")
+                                  : (sel ? "< " : "") + settingValue(id) + (sel ? " >" : "");
+    canvas.drawString(value, 236, y);
     canvas.setTextDatum(top_left);
   }
 }
@@ -618,6 +710,10 @@ static void menuSelect(int id) {
 
 static void handleKey(char c, bool enter, bool del, bool tab) {
   if (page == PAGE_SETTINGS) {
+    if (isTextSetting(settingsSel) && (enter || c == '/')) {
+      if (hasKeyboard) startEdit();
+      return;
+    }
     if (c == ';') settingsSel = (settingsSel + S_COUNT - 1) % S_COUNT;
     else if (c == '.') settingsSel = (settingsSel + 1) % S_COUNT;
     else if (c == ',') changeSetting(settingsSel, -1);
@@ -652,8 +748,12 @@ static void handleInput() {
       activity = true;
       if (screenOn) {
         auto& ks = M5Cardputer.Keyboard.keysState();
-        char c = ks.word.empty() ? 0 : tolower(ks.word[0]);
-        handleKey(c, ks.enter, ks.del, ks.tab);
+        if (page == PAGE_SETTINGS && editing) {
+          handleEditKey(ks.word, ks.enter, ks.del);
+        } else {
+          char c = ks.word.empty() ? 0 : tolower(ks.word[0]);
+          handleKey(c, ks.enter, ks.del, ks.tab);
+        }
       }
     }
   }
@@ -664,7 +764,8 @@ static void handleInput() {
   } else if (M5.BtnA.wasClicked()) {
     activity = true;
     if (screenOn) {
-      if (page == PAGE_SETTINGS) closeSettings();
+      if (page == PAGE_SETTINGS && editing) editing = false;
+      else if (page == PAGE_SETTINGS) closeSettings();
       else if (page == PAGE_HELP) page = returnPage;
       else nextPage(+1);
     }
@@ -719,6 +820,7 @@ void setup() {
   if (sdOk && !configLoad(cfg)) configSave(cfg);  // first start: write defaults to SD
   M5.Display.setBrightness(cfg.brightness);
   startGps();
+  if (cfg.nmeaServer) nmeaserver::begin(cfg);
 
   if (!sdOk) showStatus("No SD card!", 4000);
   else if (!fromSleep && cfg.autoStart) startLogging();
@@ -732,6 +834,13 @@ void loop() {
   gps.update();
   if (gps.baudLocked() && cfg.gpsBaud == 0) rtc.detectedBaud = gps.baud();
   handleInput();
+  nmeaserver::update();
+  int devices = nmeaserver::deviceCount();
+  if (devices != lastDeviceCount) {
+    showStatus(devices > lastDeviceCount ? ("Device connected (" + String(devices) + ")").c_str()
+                                         : ("Device disconnected (" + String(devices) + ")").c_str());
+    lastDeviceCount = devices;
+  }
 
   uint32_t now = millis();
   if (rtc.logging && sdOk && (lastLogMs == 0 || now - lastLogMs >= cfg.logIntervalSec * 1000UL)) {

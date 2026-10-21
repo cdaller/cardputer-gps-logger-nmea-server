@@ -17,6 +17,8 @@ in large colored digits, and uses deep sleep between points to save battery.
   buffered in RAM and written in 4 KB chunks (up to 4 KB are lost on power loss)
 - Configurable log interval (1 s … 1 h), format, time zone, brightness, timeouts
 - Deep sleep between points while logging (interval >= 15 s)
+- NMEA server over WiFi (TCP + UDP) for chart apps like Garmin Boating, either with its
+  own WiFi network or in an existing one
 - GPS module presets plus custom RX/TX pins and baud rate, or automatic baud detection
 - Keyboard control when a keyboard is detected (matrix keyboard on v1.x, TCA8418 on ADV);
   without keyboard the G0 button still works
@@ -95,7 +97,37 @@ fix_timeout=60            # max. seconds to wait for a fix after deep sleep wake
 tz_offset=0               # hours added to UTC for the display
 auto_start=0              # start logging after power on
 brightness=128
+nmea_server=0             # 1 = send NMEA over WiFi
+wifi_mode=ap              # ap = own network, client = join wifi_ssid
+wifi_ssid=
+wifi_pass=
+ap_ssid=GPS-Logger
+ap_pass=gpslogger         # empty = open network, else min. 8 characters
+nmea_port=2000            # TCP server and UDP broadcast port
 ```
+
+WiFi names and passwords can also be typed in the settings page: select the entry, press
+`Enter`, type, `Enter` to accept (`Del` deletes, G0 cancels). They are stored in plain text
+in `config.txt`.
+
+## NMEA server (Garmin Boating app)
+
+With `nmea_server=1` the Cardputer sends every NMEA sentence from the GPS over WiFi:
+to all TCP clients connected to `nmea_port` (up to 4) and as UDP broadcast to the same port.
+
+- **Own network** (`wifi_mode=ap`): join the WiFi `GPS-Logger` (password `gpslogger`) with
+  the iPad. The Cardputer has the address `192.168.4.1`.
+- **Existing network** (`wifi_mode=client`): the Cardputer joins `wifi_ssid`; its address
+  is shown on the details page.
+
+In the Garmin Boating app: *Menu > Paired devices > + > Add device*, enter
+host = the address above, port = `nmea_port` (default 2000) and TCP or UDP.
+
+The status bar shows a small **W** while the server runs: orange = no network yet,
+grey = no device, green with a number = connected devices (TCP clients; in AP mode also
+devices that joined the network - pure UDP listeners in client mode can't be detected).
+The details page shows address, port and counts. Deep sleep is disabled while the server is
+on, and WiFi increases the power consumption considerably.
 
 ## Deep sleep
 
