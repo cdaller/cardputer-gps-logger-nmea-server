@@ -76,14 +76,17 @@ static int batteryPctFromMv(int mv) {
 
 // Smoothed battery voltage: one ADC sample per second into an exponential moving
 // average (~30 s time constant), since single readings jitter by tens of mV.
+// The weight grows with the time since the last sample, so after a long gap
+// (screen off, long log interval) the average jumps to the current reading.
 static int batteryMvUi() {
   static uint32_t lastSampleMs = 0;
   static float avgMv = 0;
   uint32_t now = millis();
-  if (avgMv == 0 || now - lastSampleMs >= 1000) {
+  uint32_t dt = now - lastSampleMs;
+  if (avgMv == 0 || dt >= 1000) {
     lastSampleMs = now;
     int mv = M5.Power.getBatteryVoltage();
-    avgMv = avgMv == 0 ? mv : avgMv + (mv - avgMv) / 30.0f;
+    avgMv = avgMv == 0 ? mv : avgMv + (mv - avgMv) * min(1.0f, dt / 30000.0f);
   }
   return (int)(avgMv + 0.5f);
 }
