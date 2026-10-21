@@ -861,10 +861,13 @@ static void toggleNmeaServer() {
   showStatus(cfg.nmeaServer ? "NMEA server started" : "NMEA server stopped");
 }
 
+// Font4 needs ~24 px per line with descenders: rows touch, so the selection
+// is drawn before all labels and doesn't cover the row above.
 static void drawMenuPage() {
-  const int rowH = 20;
+  const int top = 19, rowH = 23;
+  canvas.fillRoundRect(2, top + menuSel * rowH, 236, rowH - 2, 5, COL_SEL);
   for (int id = 0; id < M_COUNT; id++) {
-    int y = 20 + id * rowH;
+    int y = top + id * rowH;
     bool sel = id == menuSel;
     String label;
     uint16_t col = TFT_WHITE;
@@ -884,15 +887,11 @@ static void drawMenuPage() {
         col = TFT_MAGENTA;
         break;
     }
-    if (sel) canvas.fillRoundRect(2, y, 236, rowH - 2, 5, COL_SEL);
     bool disabled = id == M_SERVER && !cfg.nmeaServer && !wifiConfigured();
     canvas.setFont(&fonts::Font4);
     canvas.setTextColor(disabled ? 0x4208 : sel ? col : COL_LABEL);
-    canvas.drawString(label, 14, y - 1);
+    canvas.drawString(label, 14, y);
   }
-  canvas.setFont(&fonts::Font0);
-  canvas.setTextColor(COL_LABEL);
-  canvas.drawString("Up/Down: select   Enter: OK   Tab: page", 3, 126);
 }
 
 static void draw() {
@@ -1048,6 +1047,7 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
 
 static void handleInput() {
   bool activity = false;
+  bool wasOn = screenOn;  // a key that turns the screen off must not wake it again
 
   if (hasKeyboard) {
     M5Cardputer.Keyboard.updateKeyList();
@@ -1081,7 +1081,7 @@ static void handleInput() {
 
   if (activity) {
     lastInputMs = millis();
-    setScreen(true);
+    if (!wasOn) setScreen(true);
   }
 }
 
