@@ -862,7 +862,7 @@ static void toggleNmeaServer() {
 }
 
 static void drawMenuPage() {
-  const int rowH = 21;
+  const int rowH = 20;
   for (int id = 0; id < M_COUNT; id++) {
     int y = 20 + id * rowH;
     bool sel = id == menuSel;

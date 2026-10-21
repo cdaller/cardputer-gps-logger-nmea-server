@@ -40,6 +40,19 @@ Cardputer v1.x).
 - Configuration stored as a text file on the SD card (`/gpslogger/config.txt`), so it
   survives installing other firmware via the Launcher and can be edited on a PC
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Position page](docs/screen_main.png) | ![Position page while recording](docs/screen_main_recording.png) |
+| **Position:** latitude, longitude, altitude, satellites and local time | **Recording:** blinking `REC` with point count, `↑ NMEA` while the NMEA server runs |
+| ![Details page](docs/screen_info.png) | ![Satellites page](docs/screen_satellites.png) |
+| **Details:** speed, course, HDOP and accuracy, GPS module, log and battery | **Satellites:** used / in view per constellation |
+| ![Signal page](docs/screen_sat_signals.png) | ![NMEA server page](docs/screen_nmea_server.png) |
+| **Signal:** SNR of every satellite in view, green = used in the fix | **NMEA server:** network, address and port for the app, connected devices |
+| ![Menu page](docs/screen_menu.png) | |
+| **Menu:** logging, NMEA server, settings, help, screen off | |
+
 ## Supported hardware
 
 | Device                         | Notes                                                     |
