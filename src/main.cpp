@@ -74,7 +74,19 @@ static int batteryPctFromMv(int mv) {
   return constrain((mv - 3300) * 100 / (4150 - 3300), 0, 100);
 }
 
-static int batteryMvUi() { return M5.Power.getBatteryVoltage(); }
+// Smoothed battery voltage: one ADC sample per second into an exponential moving
+// average (~30 s time constant), since single readings jitter by tens of mV.
+static int batteryMvUi() {
+  static uint32_t lastSampleMs = 0;
+  static float avgMv = 0;
+  uint32_t now = millis();
+  if (avgMv == 0 || now - lastSampleMs >= 1000) {
+    lastSampleMs = now;
+    int mv = M5.Power.getBatteryVoltage();
+    avgMv = avgMv == 0 ? mv : avgMv + (mv - avgMv) / 30.0f;
+  }
+  return (int)(avgMv + 0.5f);
+}
 
 static void showStatus(const char* msg, uint32_t ms = 2500) {
   strlcpy(statusMsg, msg, sizeof(statusMsg));
@@ -715,6 +727,8 @@ void loop() {
       now - lastInputMs > cfg.screenTimeoutSec * 1000UL) {
     if (canDeepSleep() && lastLogMs) {
       uint32_t ms = remainingIntervalMs(now - lastLogMs);
+      // Point overdue without fix: sleep and let the timer wake retry with fix_timeout
+      if (ms == 0 && !gps.hasFix()) ms = MIN_SLEEP_MS;
       if (ms >= MIN_SLEEP_MS) {
         showStatus("Deep sleep - G0 wakes", 10000);
         draw();
