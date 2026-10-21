@@ -25,6 +25,7 @@ static const uint8_t TCA8418_ADDR = 0x34;           // ADV keyboard controller
 
 static const uint32_t MIN_SLEEP_INTERVAL_SEC = 15;  // below this, deep sleep is not worth it
 static const uint32_t MIN_SLEEP_MS = 3000;
+static const float HDOP_UERE_M = 5.0f;              // for the accuracy estimate
 static const uint32_t RTC_MAGIC = 0x47504C31;
 
 // Survives deep sleep.
@@ -38,9 +39,9 @@ struct RtcState {
 };
 RTC_DATA_ATTR RtcState rtc;
 
-enum Page { PAGE_MAIN, PAGE_DETAILS, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP };
-// MAIN, DETAILS, WIFI, MENU are switched with Tab / G0; WIFI only with the NMEA server on
-static const int PAGE_CYCLE_COUNT = 4;
+enum Page { PAGE_MAIN, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP };
+// MAIN .. MENU are switched with Tab / G0; WIFI only with the NMEA server on
+static const int PAGE_CYCLE_COUNT = 6;
 
 static Config cfg;
 static GpsReader gps;
@@ -72,6 +73,8 @@ static const uint16_t COL_ALT = TFT_YELLOW;
 static const uint16_t COL_TIME = TFT_WHITE;
 static const uint16_t COL_NOFIX = 0xFB2C;   // soft red
 static const uint16_t COL_SEL = 0x2A69;     // blue-ish selection
+static const uint16_t COL_SAT_USED = 0x2BC9;  // green: satellite used in fix
+static const uint16_t COL_SAT_SEEN = 0x4A8B;  // grey: visible, not used
 
 // ---------------------------------------------------------------- helpers
 
@@ -393,7 +396,11 @@ static void drawDetailsPage() {
     y += 14;
   };
   line(TFT_CYAN, "Speed %.1f km/h  Course %.0f", g.speed.kmph(), g.course.deg());
-  line(TFT_GREEN, "HDOP %.2f  Sats %lu/%d  Age %lus", g.hdop.hdop(),
+  // Rough horizontal accuracy: HDOP x user range error (~5 m for a consumer
+  // module without corrections; real error can be larger with weak signals).
+  char acc[12] = "";
+  if (gps.hasFix() && g.hdop.isValid()) snprintf(acc, sizeof(acc), " ~%.0fm", g.hdop.hdop() * HDOP_UERE_M);
+  line(TFT_GREEN, "HDOP %.1f%s  Sats %lu/%d  Age %lus", g.hdop.hdop(), acc,
        (unsigned long)g.satellites.value(), gps.satsInView(),
        g.location.isValid() ? (unsigned long)(g.location.age() / 1000) : 0UL);
   line(TFT_YELLOW, "%s RX%d TX%d %lu%s", GPS_PRESETS[cfg.gpsModule].name, cfg.gpsRx, cfg.gpsTx,
@@ -449,6 +456,67 @@ static void drawWifiPage() {
   String devices = "TCP " + String(tcp);
   if (!cfg.wifiClient) devices += ", in WiFi " + String(nmeaserver::apStations());
   drawLabeled(113, "Devices", devices, nmeaserver::deviceCount() ? TFT_GREEN : COL_LABEL);
+}
+
+// Satellites per constellation: used (green) and in view (grey) as bars,
+// scaled to the constellation with the most satellites in view.
+static void drawSatsPage() {
+  const int rowH = 19, barX = 66, barW = 128;
+  int scale = 1;
+  for (int sys = 0; sys < SYS_COUNT; sys++) scale = max(scale, gps.satsInView(sys));
+  canvas.setFont(&fonts::Font2);
+  for (int sys = 0; sys < SYS_COUNT; sys++) {
+    int y = 20 + sys * rowH;
+    int seen = gps.satsInView(sys), used = gps.satsUsed(sys);
+    canvas.setTextColor(seen ? TFT_WHITE : COL_LABEL);
+    canvas.drawString(GNSS_NAMES[sys], 3, y + 1);
+    canvas.fillRoundRect(barX, y + 5, barW, 8, 3, COL_BAR);
+    if (seen) canvas.fillRoundRect(barX, y + 5, barW * seen / scale, 8, 3, COL_SAT_SEEN);
+    if (used) canvas.fillRoundRect(barX, y + 5, barW * min(used, scale) / scale, 8, 3, COL_SAT_USED);
+    canvas.setTextColor(used ? TFT_GREEN : seen ? TFT_WHITE : COL_LABEL);
+    canvas.setTextDatum(top_right);
+    canvas.drawString(String(used) + "/" + String(seen), 237, y + 1);
+    canvas.setTextDatum(top_left);
+  }
+}
+
+// Signal strength (SNR, dB-Hz) of each satellite in view as vertical bars,
+// green = used in fix. Below each bar the constellation letter, above it the
+// SNR value if there is room.
+static void drawSignalPage() {
+  static const char SYS_LETTERS[SYS_COUNT] = {'G', 'R', 'E', 'C', 'J', 'S'};
+  static SatInfo sats[64];
+  int n = gps.satellites(sats, 64);
+  const int top = 42, bottom = 124, maxSnr = 50;  // grid line every 10 dB-Hz
+  canvas.setFont(&fonts::Font0);
+  canvas.setTextColor(COL_LABEL);
+  if (n == 0) {
+    canvas.setFont(&fonts::Font2);
+    canvas.drawString("No satellites in view", 3, 22);
+    return;
+  }
+  canvas.drawString("G GPS R GLO E GAL C BDS J QZS S SBAS", 3, 21);
+  for (int db = 10; db < maxSnr; db += 10) {
+    int y = bottom - (bottom - top) * db / maxSnr;
+    canvas.drawFastHLine(0, y, 240, COL_BAR);
+  }
+  int slot = min(16, 240 / n);
+  int barW = max(slot - 2, 1);
+  int x0 = (240 - slot * n) / 2;
+  for (int i = 0; i < n; i++) {
+    int x = x0 + i * slot;
+    int h = (bottom - top) * min<int>(sats[i].snr, maxSnr) / maxSnr;
+    uint16_t col = sats[i].used ? COL_SAT_USED : COL_SAT_SEEN;
+    if (h) canvas.fillRect(x, bottom - h, barW, h, col);
+    canvas.setTextDatum(top_center);
+    canvas.setTextColor(sats[i].used ? TFT_GREEN : COL_LABEL);
+    if (slot >= 6) canvas.drawString(String(SYS_LETTERS[sats[i].sys]), x + barW / 2, bottom + 2);
+    if (slot >= 13 && sats[i].snr) {
+      canvas.setTextDatum(bottom_center);
+      canvas.drawString(String(sats[i].snr), x + barW / 2, bottom - h - 1);
+    }
+  }
+  canvas.setTextDatum(top_left);
 }
 
 // ---------------------------------------------------------------- settings
@@ -672,7 +740,7 @@ static void drawHelpPage() {
   canvas.drawString("KEYS", 3, 20);
   const char* lines[] = {
     "Enter/R  start / stop logging",
-    "Tab / ,/  page (pos/info/wifi/menu)",
+    "Tab ,/  page pos/info/sat/wifi/menu",
     "S  settings   H  this help",
     "Z  screen off / sleep now",
     "G0 click: page  hold: rec",
@@ -747,6 +815,8 @@ static void draw() {
     drawStatusBar();
     if (page == PAGE_MAIN) drawMainPage();
     else if (page == PAGE_DETAILS) drawDetailsPage();
+    else if (page == PAGE_SATS) drawSatsPage();
+    else if (page == PAGE_SIGNAL) drawSignalPage();
     else if (page == PAGE_WIFI) drawWifiPage();
     else if (page == PAGE_MENU) drawMenuPage();
     else drawHelpPage();

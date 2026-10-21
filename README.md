@@ -8,7 +8,13 @@ in large colored digits, and uses deep sleep between points to save battery.
 
 - Large display: latitude, longitude, altitude, local time, satellites (used / in view)
 - Status bar: recording state + point count, GPS state, SD state, battery level
-- Details page: speed, course, HDOP, fix age, NMEA statistics, log file, battery voltage
+- Details page: speed, course, HDOP with a rough accuracy estimate (HDOP x 5 m), fix age,
+  NMEA statistics, log file, battery voltage
+- Satellites page: used / in view per constellation (GPS, GLONASS, Galileo, BeiDou, QZSS,
+  SBAS) as bars, green = used in the fix
+- Signal page: signal strength (SNR, dB-Hz) of every satellite in view as a bar chart,
+  green = used in the fix; letters below the bars: G GPS, R GLONASS, E Galileo,
+  C BeiDou, J QZSS, S SBAS
 - Menu page: start/stop logging, start/stop NMEA server, settings, help, screen off /
   deep sleep - no need to remember key letters
 - Logging to `/gpslogger/tracks/YYYYMMDD_HHMMSS.csv` / `.gpx` (UTC time stamps).
@@ -36,7 +42,8 @@ in large colored digits, and uses deep sleep between points to save battery.
 | Custom            | any| any| any    | set pins and baud in the settings         |
 
 RX/TX are seen from the Cardputer (Cardputer RX <- GPS TX). Any module that outputs
-standard NMEA (GGA/RMC, GSV for satellites in view) over UART should work.
+standard NMEA (GGA/RMC, GSV for satellites in view, GSA for satellites used) over UART
+should work.
 On Cardputer v1.x, pins 13/15 belong to the keyboard matrix - use the Grove port there.
 
 ## Build & flash
@@ -68,7 +75,7 @@ Every build writes two files to `dist/`:
 | Key (keyboard)     | Action                                  |
 |--------------------|-----------------------------------------|
 | `Enter` / `R`      | start / stop logging                    |
-| `Tab`, `/` , `,`   | switch page: position -> details -> WiFi -> menu (WiFi only with NMEA server on) |
+| `Tab`, `/` , `,`   | switch page: position -> details -> satellites -> signal -> WiFi -> menu (WiFi only with NMEA server on) |
 | `;` `.` + `Enter`  | menu page: select item (up/down arrow keys) and run it |
 | `S`                | settings (`;` `.` select, `,` `/` change, `` ` `` / `Del` save & exit) |
 | `H`                | help                                    |
@@ -127,7 +134,7 @@ While the server runs, the status bar is compacted (satellites without `SAT`, ba
 percentage inside the battery symbol) and shows **W**: orange = no network yet,
 grey = no device, green with a number = connected devices (TCP clients; in AP mode also
 devices that joined the network - pure UDP listeners in client mode can't be detected).
-The WiFi page (after the details page) shows network name, AP password or connection
+The WiFi page (after the signal page) shows network name, AP password or connection
 status, address, port and connected devices. Deep sleep is disabled while the server is
 on, and WiFi increases the power consumption considerably.
 
