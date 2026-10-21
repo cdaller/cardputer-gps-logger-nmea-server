@@ -61,7 +61,8 @@ Every build writes two files to `dist/`:
 - `GPS-Logger.bin` - application image for the **Launcher**
 - `GPS-Logger-full.bin` - merged image to flash at offset `0x0` (esptool, M5Burner, web flasher)
 
-The firmware version is set in `src/version.h` and shown on the help page (`H`).
+The firmware version is set in `src/version.h`, shown on the help page (`H`) and written
+to the `creator` attribute of GPX files.
 
 ## Start via the Launcher
 

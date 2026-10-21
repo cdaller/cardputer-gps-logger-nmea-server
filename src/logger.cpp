@@ -1,5 +1,6 @@
 #include "logger.h"
 #include "config.h"
+#include "version.h"
 #include <SD.h>
 #include <SPI.h>
 
@@ -48,7 +49,7 @@ static bool writeGpx(const LogPoint& p, const String& path) {
     f = SD.open(path, FILE_WRITE);
     if (!f) return false;
     f.print("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-            "<gpx version=\"1.1\" creator=\"Cardputer GPS Logger\" "
+            "<gpx version=\"1.1\" creator=\"Cardputer GPS Logger v" FW_VERSION "\" "
             "xmlns=\"http://www.topografix.com/GPX/1/1\">\n"
             " <trk>\n  <name>");
     f.print(path.substring(path.lastIndexOf('/') + 1));

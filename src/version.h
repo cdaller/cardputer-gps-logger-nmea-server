@@ -1,4 +1,4 @@
 #pragma once
 
-// Firmware version, shown on the help page. Bump for every release.
-#define FW_VERSION "1.0.0"
+// Firmware version, shown on the help page and written to GPX files. Bump for every release.
+#define FW_VERSION "1.0.1"
