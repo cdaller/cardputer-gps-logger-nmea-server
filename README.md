@@ -80,17 +80,17 @@ pio device monitor      # serial log
 
 Every build writes two files to `dist/`:
 
-- `GPS-Logger.bin` - application image for the **Launcher**
-- `GPS-Logger-full.bin` - merged image to flash at offset `0x0` (esptool, M5Burner, web flasher)
+- `GPS-NMEA-Logger.bin` - application image for the **Launcher**
+- `GPS-NMEA-Logger-full.bin` - merged image to flash at offset `0x0` (esptool, M5Burner, web flasher)
 
 The firmware version is set in `src/version.h`, shown on the help page (`H`) and written
 to the `creator` attribute of GPX files.
 
 ## Start via the Launcher
 
-1. Copy `dist/GPS-Logger.bin` to the SD card.
+1. Copy `dist/GPS-NMEA-Logger.bin` to the SD card.
 2. On the Cardputer start [Launcher](https://github.com/bmorcelli/Launcher), choose
-   *SD*, select `GPS-Logger.bin` and install it.
+   *SD*, select `GPS-NMEA-Logger.bin` and install it.
 3. **Important for deep sleep:** in the Launcher settings untick
    **"DeepSleep starts Launcher"**. Otherwise every wake-up from deep sleep opens the
    Launcher instead of returning to the logger.
@@ -134,7 +134,7 @@ nmea_server=0             # 1 = send NMEA over WiFi
 wifi_mode=ap              # ap = own network, client = join wifi_ssid
 wifi_ssid=
 wifi_pass=
-ap_ssid=GPS-Logger
+ap_ssid=GPS-NMEA-Logger
 ap_pass=gpslogger         # empty = open network, else min. 8 characters
 nmea_port=2000            # TCP server and UDP broadcast port
 ```
@@ -148,7 +148,7 @@ in `config.txt`.
 With `nmea_server=1` the Cardputer sends every NMEA sentence from the GPS over WiFi:
 to all TCP clients connected to `nmea_port` (up to 4) and as UDP broadcast to the same port.
 
-- **Own network** (`wifi_mode=ap`): join the WiFi `GPS-Logger` (password `gpslogger`) with
+- **Own network** (`wifi_mode=ap`): join the WiFi `GPS-NMEA-Logger` (password `gpslogger`) with
   the iPad. The Cardputer has the address `192.168.4.1`.
 - **Existing network** (`wifi_mode=client`): the Cardputer joins `wifi_ssid`; its address
   is shown on the WiFi page.

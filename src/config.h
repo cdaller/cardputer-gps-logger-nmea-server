@@ -43,7 +43,7 @@ struct Config {
   bool wifiClient = false;        // false: own access point, true: join wifiSsid
   String wifiSsid;
   String wifiPass;
-  String apSsid = "GPS-Logger";
+  String apSsid = "GPS-NMEA-Logger";
   String apPass = "gpslogger";    // empty = open network, else min. 8 characters
   uint16_t nmeaPort = 2000;
 
