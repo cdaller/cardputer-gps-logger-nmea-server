@@ -118,7 +118,7 @@ to all TCP clients connected to `nmea_port` (up to 4) and as UDP broadcast to th
 - **Own network** (`wifi_mode=ap`): join the WiFi `GPS-Logger` (password `gpslogger`) with
   the iPad. The Cardputer has the address `192.168.4.1`.
 - **Existing network** (`wifi_mode=client`): the Cardputer joins `wifi_ssid`; its address
-  is shown on the details page.
+  is shown on the WiFi page.
 
 In the Garmin Boating app: *Menu > Paired devices > + > Add device*, enter
 host = the address above, port = `nmea_port` (default 2000) and TCP or UDP.
@@ -129,6 +129,21 @@ devices that joined the network - pure UDP listeners in client mode can't be det
 The WiFi page (after the details page) shows network name, AP password or connection
 status, address, port and connected devices. Deep sleep is disabled while the server is
 on, and WiFi increases the power consumption considerably.
+
+### Testing from a computer
+
+Join the same WiFi as the Cardputer, then:
+
+```sh
+# TCP (use the address from the WiFi page in client mode)
+nc 192.168.4.1 2000
+
+# UDP broadcast (brew install socat)
+socat -u UDP-RECV:2000 -
+```
+
+Don't use `nc -ul 2000` for UDP: macOS netcat ties its socket to the first sender and its
+own address, so it drops the following broadcast packets after a few lines.
 
 ## Deep sleep
 
