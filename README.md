@@ -7,7 +7,10 @@ in large colored digits, and uses deep sleep between points to save battery.
 ## Features
 
 - Large display: latitude, longitude, altitude, local time, satellites (used / in view)
-- Status bar: recording state + point count, GPS state, SD state, battery level
+- Status bar: recording state + point count, satellite reception (FIX / NO FIX, used / in
+  view), NMEA server (`↑ NMEA`), missing SD card, battery level (percentage left out if the
+  bar is full)
+- Big page: speed, direction (degrees and N / NE / E ...) and altitude in large letters
 - Details page: speed, course, HDOP with a rough accuracy estimate (HDOP x 5 m), fix age,
   NMEA statistics, log file, battery voltage
 - Satellites page: used / in view per constellation (GPS, GLONASS, Galileo, BeiDou, QZSS,
@@ -78,7 +81,8 @@ to the `creator` attribute of GPX files.
 | Key (keyboard)     | Action                                  |
 |--------------------|-----------------------------------------|
 | `Enter` / `R`      | start / stop logging                    |
-| `Tab`, `/` , `,`   | switch page: position -> details -> satellites -> signal -> WiFi -> menu (WiFi only with NMEA server on) |
+| `Tab`, `/` , `,`   | switch page: position -> big -> details -> satellites -> signal -> WiFi -> menu (WiFi only with NMEA server on) |
+| `1` ... `7`        | jump to page: 1 position, 2 big, 3 details, 4 satellites, 5 signal, 6 WiFi, 7 menu |
 | `;` `.` + `Enter`  | menu page: select item (up/down arrow keys) and run it |
 | `S`                | settings (`;` `.` select, `,` `/` change, `` ` `` / `Del` save & exit) |
 | `H`                | help                                    |
@@ -133,9 +137,8 @@ to all TCP clients connected to `nmea_port` (up to 4) and as UDP broadcast to th
 In the Garmin Boating app: *Menu > Paired devices > + > Add device*, enter
 host = the address above, port = `nmea_port` (default 2000) and TCP or UDP.
 
-While the server runs, the status bar is compacted (satellites without `SAT`, battery
-percentage inside the battery symbol) and shows **W**: orange = no network yet,
-grey = no device, green with a number = connected devices (TCP clients; in AP mode also
+While the server runs, the status bar shows **↑ NMEA**: orange = no network yet,
+grey = no device, green = connected devices (TCP clients; in AP mode also
 devices that joined the network - pure UDP listeners in client mode can't be detected).
 The WiFi page (after the signal page) shows network name, AP password or connection
 status, address, port and connected devices. Deep sleep is disabled while the server is

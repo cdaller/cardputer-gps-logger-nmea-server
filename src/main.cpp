@@ -40,9 +40,9 @@ struct RtcState {
 };
 RTC_DATA_ATTR RtcState rtc;
 
-enum Page { PAGE_MAIN, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP };
+enum Page { PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP };
 // MAIN .. MENU are switched with Tab / G0; WIFI only with the NMEA server on
-static const int PAGE_CYCLE_COUNT = 6;
+static const int PAGE_CYCLE_COUNT = 7;
 
 static Config cfg;
 static GpsReader gps;
@@ -251,78 +251,113 @@ static void quietWakeCycle() {
 
 // ---------------------------------------------------------------- drawing
 
-static void drawBattery(int x, int y) {
-  int mv = batteryMvUi();
-  int pct = batteryPctFromMv(mv);
-  uint16_t col = pct > 50 ? TFT_GREEN : pct > 20 ? TFT_YELLOW : TFT_RED;
-  canvas.drawRect(x, y + 3, 22, 11, TFT_WHITE);
-  canvas.fillRect(x + 22, y + 6, 2, 5, TFT_WHITE);
-  canvas.fillRect(x + 2, y + 5, 18 * pct / 100, 7, col);
-  canvas.setTextColor(col);
-  canvas.setTextDatum(top_right);
-  canvas.drawString(String(pct) + "%", x - 3, y + 1);
-  canvas.setTextDatum(top_left);
+static uint16_t batteryColor(int pct) {
+  return pct > 50 ? TFT_GREEN : pct > 20 ? TFT_YELLOW : TFT_RED;
 }
 
-// Wider battery symbol with the percentage inside, for a crowded status bar.
-static void drawBatteryCompact(int x, int y) {
-  int pct = batteryPctFromMv(batteryMvUi());
-  canvas.drawRect(x, y + 3, 30, 11, TFT_WHITE);
-  canvas.fillRect(x + 30, y + 6, 2, 5, TFT_WHITE);
-  canvas.setFont(&fonts::Font0);
-  canvas.setTextColor(pct > 50 ? TFT_GREEN : pct > 20 ? TFT_YELLOW : TFT_RED);
-  canvas.setTextDatum(middle_center);
-  canvas.drawString(String(pct) + "%", x + 15, y + 9);
-  canvas.setTextDatum(top_left);
-  canvas.setFont(&fonts::Font2);
+// Battery symbol ending at x (right edge), with the percentage left of it if
+// withPct. Returns the left edge.
+static int drawBattery(int x, int pct, bool withPct) {
+  uint16_t col = batteryColor(pct);
+  x -= 24;
+  canvas.drawRect(x, 3, 22, 11, TFT_WHITE);
+  canvas.fillRect(x + 22, 6, 2, 5, TFT_WHITE);
+  canvas.fillRect(x + 2, 5, max(18 * pct / 100, 1), 7, col);
+  if (!withPct) return x;
+  String s = String(pct) + "%";
+  canvas.setTextColor(col);
+  canvas.drawString(s, x - 3 - canvas.textWidth(s), 1);
+  return x - 3 - canvas.textWidth(s);
+}
+
+// Up arrow (U+2191 is not in the built-in fonts) followed by "NMEA".
+static const int NMEA_ARROW_W = 9;
+static void drawNmeaUpload(int x, uint16_t col) {
+  canvas.fillTriangle(x + 3, 3, x, 8, x + 6, 8, col);
+  canvas.fillRect(x + 2, 8, 3, 7, col);
+  canvas.setTextColor(col);
+  canvas.drawString("NMEA", x + NMEA_ARROW_W, 1);
 }
 
 static uint16_t satColor(int sats) {
   return sats >= 7 ? TFT_GREEN : sats >= 4 ? TFT_YELLOW : TFT_RED;
 }
 
+// Left: recording state. Right to left: battery, NMEA server, SD (only if
+// missing), satellite reception. Without room the satellite count (or the
+// baud rate being tried) and then the battery percentage are left out.
 static void drawStatusBar() {
   canvas.fillRect(0, 0, 240, 18, COL_BAR);
   canvas.setFont(&fonts::Font2);
   canvas.setTextDatum(top_left);
+  int left;
   if (rtc.logging) {
     bool blink = (millis() / 500) % 2;
     canvas.fillCircle(7, 9, 5, blink ? TFT_RED : 0x7800);
     canvas.setTextColor(TFT_RED);
-    canvas.drawString("REC " + String(rtc.points), 15, 1);
+    String rec = "REC " + String(rtc.points);
+    canvas.drawString(rec, 15, 1);
+    left = 15 + canvas.textWidth(rec);
   } else {
     canvas.setTextColor(COL_LABEL);
     canvas.drawString("IDLE", 3, 1);
+    left = 3 + canvas.textWidth("IDLE");
   }
 
+  // Satellite reception
   bool gpsAlive = gps.lastDataMs() && millis() - gps.lastDataMs() < 5000;
+  int used = gps.gps().satellites.value();
+  String sat, satCount;
+  uint16_t satCol;
   if (!gps.baudLocked()) {
-    canvas.setTextColor(TFT_ORANGE);
-    canvas.drawString("BAUD " + String(gps.baud()), 82, 1);
+    sat = "BAUD";
+    satCount = " " + String(gps.baud());
+    satCol = TFT_ORANGE;
   } else if (!gpsAlive) {
+    sat = "NO GPS";
+    satCol = TFT_RED;
+  } else {
+    bool fix = gps.hasFix();
+    sat = fix ? "FIX" : "NO FIX";
+    satCol = fix ? satColor(used) : TFT_RED;
+    satCount = " " + String(used) + "/" + String(gps.satsInView());
+  }
+
+  // NMEA server: orange = no network, grey = no device, green = devices connected
+  bool nmea = nmeaserver::running();
+  int devices = nmeaserver::deviceCount();
+  uint16_t nmeaCol = !nmeaserver::networkUp() ? TFT_ORANGE : devices ? TFT_GREEN : COL_LABEL;
+
+  const int gap = 8, right = 238;
+  int pct = batteryPctFromMv(batteryMvUi());
+  String pctText = String(pct) + "%";
+  int need = left + gap + canvas.textWidth(sat) + gap + 24;
+  if (!sdOk) need += gap + canvas.textWidth("NOSD");
+  if (nmea) need += gap + NMEA_ARROW_W + canvas.textWidth("NMEA");
+  bool withCount = satCount.length() && need + canvas.textWidth(satCount) <= right;
+  if (withCount) need += canvas.textWidth(satCount);
+  bool withPct = need + 3 + canvas.textWidth(pctText) <= right;
+
+  int x = drawBattery(right, pct, withPct) - gap;
+  if (nmea) {
+    x -= NMEA_ARROW_W + canvas.textWidth("NMEA");
+    drawNmeaUpload(x, nmeaCol);
+    x -= gap;
+  }
+  if (!sdOk) {
+    x -= canvas.textWidth("NOSD");
     canvas.setTextColor(TFT_RED);
-    canvas.drawString("NO GPS", 88, 1);
-  } else {
-    int used = gps.gps().satellites.value();
-    canvas.setTextColor(satColor(used));
-    String sats = String(used) + "/" + String(gps.satsInView());
-    canvas.drawString(nmeaserver::running() ? sats : "SAT " + sats, 82, 1);
+    canvas.drawString("NOSD", x, 1);
+    x -= gap;
   }
-
-  const char* sd = sdOk ? "SD" : "NOSD";
-  canvas.setTextColor(sdOk ? TFT_GREEN : TFT_RED);
-  canvas.drawString(sd, 150, 1);
-
-  // WiFi NMEA server: "W" + number of devices; orange = no network,
-  // grey = no device, green = devices connected. Needs the compact battery.
-  if (nmeaserver::running()) {
-    int n = nmeaserver::deviceCount();
-    canvas.setTextColor(!nmeaserver::networkUp() ? TFT_ORANGE : n ? TFT_GREEN : COL_LABEL);
-    canvas.drawString(n ? "W" + String(min(n, 9)) : String("W"), 150 + canvas.textWidth(sd) + 4, 1);
-    drawBatteryCompact(206, 0);
-  } else {
-    drawBattery(214, 0);
+  if (withCount) {
+    x -= canvas.textWidth(satCount);
+    canvas.setTextColor(satCol);
+    canvas.drawString(satCount, x, 1);
   }
+  x -= canvas.textWidth(sat);
+  canvas.setTextColor(satCol);
+  canvas.drawString(sat, x, 1);
 }
 
 // Small label on the left, large value right of it.
@@ -380,6 +415,55 @@ static void drawMainPage() {
   } else {
     drawRow(106, "TIME", "--:--:--", COL_NOFIX);
   }
+}
+
+// Speed, direction and altitude in large letters, readable at a glance.
+static void drawBigPage() {
+  static const char* const DIRS[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+  TinyGPSPlus& g = gps.gps();
+  bool fix = gps.hasFix();
+  char buf[16];
+  auto row = [&](int baseline, const char* label, const char* value, const char* unit, uint16_t col) {
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(COL_LABEL);
+    canvas.setTextDatum(baseline_left);
+    canvas.drawString(label, 3, baseline);
+    canvas.setFont(&fonts::FreeSansBold24pt7b);
+    canvas.setTextColor(fix ? col : COL_NOFIX);
+    canvas.drawString(value, 32, baseline);
+    int x = 32 + canvas.textWidth(value);
+    if (fix && unit) {
+      canvas.setFont(&fonts::Font2);
+      canvas.drawString(unit, x + 4, baseline);
+    }
+    return x;
+  };
+
+  if (fix && g.speed.isValid()) {
+    double kmh = g.speed.kmph();
+    snprintf(buf, sizeof(buf), kmh < 100 ? "%.1f" : "%.0f", kmh);
+  } else {
+    strcpy(buf, "--");
+  }
+  row(55, "SPD", buf, "km/h", COL_POS);
+
+  bool course = fix && g.course.isValid();
+  if (course) {
+    double deg = g.course.deg();
+    snprintf(buf, sizeof(buf), "%s %.0f", DIRS[(int)((deg + 22.5) / 45) % 8], deg);
+  } else {
+    strcpy(buf, "--");
+  }
+  int x = row(94, "DIR", buf, nullptr, TFT_WHITE);
+  if (course) {  // degree sign, not in the font
+    canvas.drawCircle(x + 7, 66, 4, TFT_WHITE);
+    canvas.drawCircle(x + 7, 66, 3, TFT_WHITE);
+  }
+
+  if (fix && g.altitude.isValid()) snprintf(buf, sizeof(buf), "%.0f", g.altitude.meters());
+  else strcpy(buf, "--");
+  row(133, "ALT", buf, "m", COL_ALT);
+  canvas.setTextDatum(top_left);
 }
 
 static void drawDetailsPage() {
@@ -745,7 +829,7 @@ static void drawHelpPage() {
   canvas.setTextDatum(top_left);
   const char* lines[] = {
     "Enter/R  start / stop logging",
-    "Tab ,/  page pos/info/sat/wifi/menu",
+    "Tab ,/ 1-7  page (1 pos .. 7 menu)",
     "S  settings   H  this help",
     "Z  screen off / sleep now",
     "G0 click: page  hold: rec",
@@ -819,6 +903,7 @@ static void draw() {
   } else {
     drawStatusBar();
     if (page == PAGE_MAIN) drawMainPage();
+    else if (page == PAGE_BIG) drawBigPage();
     else if (page == PAGE_DETAILS) drawDetailsPage();
     else if (page == PAGE_SATS) drawSatsPage();
     else if (page == PAGE_SIGNAL) drawSignalPage();
@@ -905,6 +990,12 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     if (c == ';') { menuSel = (menuSel + M_COUNT - 1) % M_COUNT; return; }
     if (c == '.') { menuSel = (menuSel + 1) % M_COUNT; return; }
     if (enter) { menuSelect(menuSel); return; }
+  }
+  if (c >= '1' && c < '1' + PAGE_CYCLE_COUNT) {  // pages in cycle order
+    Page p = (Page)(c - '1');
+    if (p == PAGE_WIFI && !cfg.nmeaServer) showStatus("NMEA server is off");
+    else page = p;
+    return;
   }
   if (enter || c == 'r') rtc.logging ? stopLogging() : startLogging();
   else if (tab || c == '/' || c == ' ') nextPage(+1);
