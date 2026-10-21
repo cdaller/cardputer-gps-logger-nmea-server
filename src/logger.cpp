@@ -11,6 +11,9 @@ static const int SD_CS = 12;
 
 static const char GPX_FOOTER[] = "  </trkseg>\n </trk>\n</gpx>\n";
 
+static char nmeaBuf[4096];
+static size_t nmeaLen = 0;
+
 namespace logger {
 
 bool sdBegin() {
@@ -77,6 +80,20 @@ bool write(const LogPoint& p, uint8_t format, char* baseName, size_t baseNameLen
   bool ok = true;
   if (format == LOG_CSV || format == LOG_CSV_GPX) ok &= writeCsv(p, base + ".csv");
   if (format == LOG_GPX || format == LOG_CSV_GPX) ok &= writeGpx(p, base + ".gpx");
+  return ok;
+}
+
+void nmeaPut(char c, const char* baseName) {
+  nmeaBuf[nmeaLen++] = c;
+  if (nmeaLen == sizeof(nmeaBuf)) nmeaFlush(baseName);
+}
+
+bool nmeaFlush(const char* baseName) {
+  if (nmeaLen == 0) return true;
+  File f = SD.open(String(baseName) + ".nmea", FILE_APPEND);
+  bool ok = f && f.write((const uint8_t*)nmeaBuf, nmeaLen) == nmeaLen;
+  if (f) f.close();
+  nmeaLen = 0;
   return ok;
 }
 

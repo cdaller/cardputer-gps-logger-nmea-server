@@ -32,7 +32,9 @@ void GpsReader::openPort(uint32_t baud) {
 void GpsReader::update() {
   if (!_running) return;
   while (_serial.available()) {
-    _gps.encode(_serial.read());
+    char c = _serial.read();
+    _gps.encode(c);
+    if (_rawSink && _locked) _rawSink(c);
   }
   if (_gps.passedChecksum() != _passedAtOpen) {
     _lastDataMs = millis();

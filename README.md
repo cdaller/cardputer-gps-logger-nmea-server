@@ -13,6 +13,8 @@ in large colored digits, and uses deep sleep between points to save battery.
   remember key letters
 - Logging to `/gpslogger/tracks/YYYYMMDD_HHMMSS.csv` / `.gpx` (UTC time stamps).
   The GPX file is closed after every point, so it stays valid if power is lost.
+- Optional raw NMEA log (`.nmea` next to the track): all sentences from the GPS,
+  buffered in RAM and written in 4 KB chunks (up to 4 KB are lost on power loss)
 - Configurable log interval (1 s … 1 h), format, time zone, brightness, timeouts
 - Deep sleep between points while logging (interval >= 15 s)
 - GPS module presets plus custom RX/TX pins and baud rate, or automatic baud detection
@@ -86,6 +88,7 @@ gps_tx=13
 gps_baud=115200           # or auto
 log_interval=5            # seconds
 log_format=CSV+GPX        # CSV | GPX | CSV+GPX
+nmea_log=0                # 1 = also log raw NMEA to .nmea
 deep_sleep=0
 screen_timeout=60         # seconds, 0 = never
 fix_timeout=60            # max. seconds to wait for a fix after deep sleep wake-up

@@ -19,4 +19,8 @@ namespace logger {
 bool sdBegin();
 // baseName: in/out, empty => a new file is created from the point's time.
 bool write(const LogPoint& p, uint8_t format, char* baseName, size_t baseNameLen);
+// Raw NMEA bytes are collected in RAM and appended to <baseName>.nmea in
+// chunks, since opening and closing the file for every sentence is slow.
+void nmeaPut(char c, const char* baseName);
+bool nmeaFlush(const char* baseName);
 }  // namespace logger

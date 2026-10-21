@@ -48,7 +48,8 @@ bool configLoad(Config& cfg) {
     else if (key == "log_format") {
       for (uint8_t i = 0; i < LOG_FORMAT_COUNT; i++)
         if (val.equalsIgnoreCase(LOG_FORMAT_NAMES[i])) cfg.logFormat = i;
-    } else if (key == "deep_sleep") cfg.deepSleep = n != 0;
+    } else if (key == "nmea_log") cfg.logNmea = n != 0;
+    else if (key == "deep_sleep") cfg.deepSleep = n != 0;
     else if (key == "screen_timeout") cfg.screenTimeoutSec = n;
     else if (key == "fix_timeout") cfg.fixTimeoutSec = max(5L, n);
     else if (key == "tz_offset") cfg.tzOffsetHours = constrain(n, -12, 14);
@@ -74,6 +75,8 @@ bool configSave(const Config& cfg) {
   f.printf("log_interval=%lu\n", (unsigned long)cfg.logIntervalSec);
   f.println("# CSV | GPX | CSV+GPX");
   f.printf("log_format=%s\n", LOG_FORMAT_NAMES[cfg.logFormat]);
+  f.println("# 1 = also write all NMEA sentences from the GPS to a .nmea file");
+  f.printf("nmea_log=%d\n", cfg.logNmea ? 1 : 0);
   f.println("# 1 = deep sleep between points while logging (interval >= 15s)");
   f.printf("deep_sleep=%d\n", cfg.deepSleep ? 1 : 0);
   f.println("# seconds without key press until screen off / deep sleep, 0 = never");

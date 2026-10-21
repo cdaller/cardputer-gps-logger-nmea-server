@@ -104,7 +104,16 @@ static uint32_t effectiveBaud() {
   return cfg.gpsBaud ? cfg.gpsBaud : rtc.detectedBaud;  // reuse auto-detected baud after wake
 }
 
-static void startGps() { gps.begin(cfg.gpsRx, cfg.gpsTx, effectiveBaud()); }
+// Raw NMEA goes to the track's .nmea file; sentences before the first point
+// (no file name yet) are dropped.
+static void nmeaSink(char c) {
+  if (rtc.logging && cfg.logNmea && sdOk && rtc.baseName[0]) logger::nmeaPut(c, rtc.baseName);
+}
+
+static void startGps() {
+  gps.begin(cfg.gpsRx, cfg.gpsTx, effectiveBaud());
+  gps.setRawSink(nmeaSink);
+}
 
 // UTC date/time from the GPS shifted by the configured offset.
 static bool localTime(struct tm& out) {
@@ -163,6 +172,7 @@ static void startLogging() {
 }
 
 static void stopLogging() {
+  if (rtc.baseName[0]) logger::nmeaFlush(rtc.baseName);
   rtc.logging = false;
   showStatus("Logging stopped");
 }
@@ -171,6 +181,7 @@ static void stopLogging() {
 
 [[noreturn]] static void enterDeepSleep(uint32_t sleepMs, bool displayActive) {
   gps.end();
+  if (sdOk && rtc.baseName[0]) logger::nmeaFlush(rtc.baseName);
   SD.end();
   if (displayActive) {
     M5.Display.setBrightness(0);
@@ -369,11 +380,11 @@ static void drawDetailsPage() {
 // ---------------------------------------------------------------- settings
 
 enum SettingId {
-  S_INTERVAL, S_FORMAT, S_SLEEP, S_SCREEN, S_FIXTO, S_MODULE, S_RX, S_TX, S_BAUD,
+  S_INTERVAL, S_FORMAT, S_NMEA, S_SLEEP, S_SCREEN, S_FIXTO, S_MODULE, S_RX, S_TX, S_BAUD,
   S_TZ, S_AUTOSTART, S_BRIGHT, S_COUNT
 };
 static const char* const SETTING_NAMES[S_COUNT] = {
-  "Log interval", "Log format", "Deep sleep", "Screen timeout", "Fix timeout", "GPS module",
+  "Log interval", "Log format", "NMEA log", "Deep sleep", "Screen timeout", "Fix timeout", "GPS module",
   "GPS RX pin", "GPS TX pin", "GPS baud", "Time zone", "Auto start", "Brightness",
 };
 static const uint32_t INTERVALS[] = {1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600};
@@ -402,6 +413,7 @@ static String settingValue(int id) {
   switch (id) {
     case S_INTERVAL: return secondsText(cfg.logIntervalSec);
     case S_FORMAT: return LOG_FORMAT_NAMES[cfg.logFormat];
+    case S_NMEA: return cfg.logNmea ? "on" : "off";
     case S_SLEEP:
       if (!cfg.deepSleep) return "off";
       return cfg.logIntervalSec >= MIN_SLEEP_INTERVAL_SEC ? "on" : "on (int<15s)";
@@ -426,6 +438,7 @@ static void changeSetting(int id, int dir) {
   switch (id) {
     case S_INTERVAL: cfg.logIntervalSec = cycle(INTERVALS, cfg.logIntervalSec, dir); break;
     case S_FORMAT: cfg.logFormat = (cfg.logFormat + LOG_FORMAT_COUNT + dir) % LOG_FORMAT_COUNT; break;
+    case S_NMEA: cfg.logNmea = !cfg.logNmea; break;
     case S_SLEEP: cfg.deepSleep = !cfg.deepSleep; break;
     case S_SCREEN: cfg.screenTimeoutSec = cycle(SCREEN_TOS, cfg.screenTimeoutSec, dir); break;
     case S_FIXTO: cfg.fixTimeoutSec = cycle(FIX_TOS, cfg.fixTimeoutSec, dir); break;

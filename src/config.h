@@ -32,6 +32,7 @@ struct Config {
   uint32_t gpsBaud = 115200;      // 0 = auto
   uint32_t logIntervalSec = 5;
   uint8_t logFormat = LOG_CSV_GPX;
+  bool logNmea = false;            // raw NMEA sentences to .nmea
   bool deepSleep = false;
   uint16_t screenTimeoutSec = 60; // 0 = never
   uint16_t fixTimeoutSec = 60;    // max. time to wait for a fix after waking up
