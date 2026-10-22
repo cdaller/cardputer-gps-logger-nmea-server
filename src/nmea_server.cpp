@@ -19,6 +19,7 @@ static uint32_t lastLineMs = 0;
 static WiFiUDP udp;
 static bool isRunning = false;
 static bool apMode = false;
+static bool apStarted = false;  // softAP() refuses e.g. a password shorter than 8 characters
 static uint16_t port = 0;
 static char line[128];
 static size_t lineLen = 0;
@@ -31,7 +32,7 @@ void begin(const Config& cfg) {
   port = cfg.nmeaPort;
   if (apMode) {
     WiFi.mode(WIFI_AP);
-    WiFi.softAP(cfg.apSsid.c_str(), cfg.apPass.length() ? cfg.apPass.c_str() : nullptr);
+    apStarted = WiFi.softAP(cfg.apSsid.c_str(), cfg.apPass.length() ? cfg.apPass.c_str() : nullptr);
   } else {
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
@@ -49,6 +50,7 @@ void end() {
   for (int i = 0; i < MAX_CLIENTS; i++) {
     clients[i].stop();
     alive[i] = false;
+    blockedSince[i] = 0;
   }
   server.end();
   udp.stop();
@@ -69,7 +71,9 @@ static void flushTcp() {
   for (int i = 0; i < MAX_CLIENTS; i++) {
     if (!alive[i]) continue;
     int n = lwip_send(clients[i].fd(), tcpBuf, tcpLen, MSG_DONTWAIT);
-    if (n >= 0) {  // a partial send only cuts one sentence, the app drops it by checksum
+    // A partial send cuts a sentence and the next chunk is appended to it without a line
+    // break: apps that resync at '$' lose one sentence, others two.
+    if (n >= 0) {
       blockedSince[i] = 0;
     } else if (errno != EWOULDBLOCK && errno != EAGAIN) {
       drop(i);
@@ -106,6 +110,7 @@ void update() {
     if (!alive[i]) {
       clients[i] = c;
       alive[i] = true;
+      blockedSince[i] = 0;
       return;
     }
   }
@@ -117,7 +122,7 @@ static void sendLine(const char* data, size_t len) {
   memcpy(tcpBuf + tcpLen, data, len);
   tcpLen += len;
   lastLineMs = millis();
-  if (apMode || WiFi.status() == WL_CONNECTED) {
+  if (networkUp()) {
     udp.beginPacket(apMode ? WiFi.softAPBroadcastIP() : WiFi.broadcastIP(), port);
     udp.write((const uint8_t*)data, len);
     udp.endPacket();
@@ -143,11 +148,11 @@ int apStations() { return isRunning && apMode ? WiFi.softAPgetStationNum() : 0; 
 
 bool running() { return isRunning; }
 
-bool networkUp() { return isRunning && (apMode || WiFi.status() == WL_CONNECTED); }
+bool networkUp() { return isRunning && (apMode ? apStarted : WiFi.status() == WL_CONNECTED); }
 
 String stateText() {
   if (!isRunning) return "off";
-  if (apMode) return "running";
+  if (apMode) return apStarted ? "running" : "AP start failed";
   switch (WiFi.status()) {
     case WL_CONNECTED: return "connected";
     case WL_NO_SSID_AVAIL: return "network not found";

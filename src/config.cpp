@@ -1,5 +1,6 @@
 #include "config.h"
 #include <SD.h>
+#include <StreamString.h>
 
 const GpsPreset GPS_PRESETS[GPS_MODULE_COUNT] = {
   {"cap_lora1262", "CAP LoRa-1262", 15, 13, 115200},
@@ -10,6 +11,10 @@ const GpsPreset GPS_PRESETS[GPS_MODULE_COUNT] = {
 };
 
 const char* const LOG_FORMAT_NAMES[LOG_FORMAT_COUNT] = {"CSV", "GPX", "CSV+GPX"};
+
+// Written first and renamed to CONFIG_PATH, so a power loss while saving
+// doesn't leave a truncated config.
+static const char CONFIG_TMP_PATH[] = CONFIG_PATH ".tmp";
 
 void Config::applyPreset(uint8_t module) {
   gpsModule = module;
@@ -24,8 +29,25 @@ void configDefaults(Config& cfg, bool isAdv) {
   cfg.applyPreset(isAdv ? GPS_CAP_LORA1262 : GPS_UNIT_V11);
 }
 
+String tzText(int16_t minutes) {
+  char buf[8];
+  int m = abs(minutes);
+  if (m % 60) snprintf(buf, sizeof(buf), "%c%d:%02d", minutes < 0 ? '-' : '+', m / 60, m % 60);
+  else snprintf(buf, sizeof(buf), "%c%d", minutes < 0 ? '-' : '+', m / 60);
+  return buf;
+}
+
+// "2", "-3.5" (hours) or "+5:45", "-3:30" (hours:minutes)
+static long parseTzMinutes(const String& val) {
+  int colon = val.indexOf(':');
+  if (colon < 0) return lround(val.toFloat() * 60);
+  long m = labs(val.substring(0, colon).toInt()) * 60 + val.substring(colon + 1).toInt();
+  return val.startsWith("-") ? -m : m;
+}
+
 bool configLoad(Config& cfg) {
   File f = SD.open(CONFIG_PATH, FILE_READ);
+  if (!f) f = SD.open(CONFIG_TMP_PATH, FILE_READ);  // power lost between remove and rename
   if (!f) return false;
   while (f.available()) {
     String line = f.readStringUntil('\n');
@@ -41,18 +63,18 @@ bool configLoad(Config& cfg) {
     if (key == "gps_module") {
       for (uint8_t i = 0; i < GPS_MODULE_COUNT; i++)
         if (val == GPS_PRESETS[i].key) cfg.gpsModule = i;
-    } else if (key == "gps_rx") cfg.gpsRx = n;
-    else if (key == "gps_tx") cfg.gpsTx = n;
+    } else if (key == "gps_rx") cfg.gpsRx = constrain(n, -1, 48);
+    else if (key == "gps_tx") cfg.gpsTx = constrain(n, -1, 48);
     else if (key == "gps_baud") cfg.gpsBaud = (val == "auto") ? 0 : n;
-    else if (key == "log_interval") cfg.logIntervalSec = max(1L, n);
+    else if (key == "log_interval") cfg.logIntervalSec = constrain(n, 1, 86400);
     else if (key == "log_format") {
       for (uint8_t i = 0; i < LOG_FORMAT_COUNT; i++)
         if (val.equalsIgnoreCase(LOG_FORMAT_NAMES[i])) cfg.logFormat = i;
     } else if (key == "nmea_log") cfg.logNmea = n != 0;
     else if (key == "deep_sleep") cfg.deepSleep = n != 0;
-    else if (key == "screen_timeout") cfg.screenTimeoutSec = n;
-    else if (key == "fix_timeout") cfg.fixTimeoutSec = max(5L, n);
-    else if (key == "tz_offset") cfg.tzOffsetHours = constrain(n, -12, 14);
+    else if (key == "screen_timeout") cfg.screenTimeoutSec = constrain(n, 0, 65535);
+    else if (key == "fix_timeout") cfg.fixTimeoutSec = constrain(n, 5, 3600);
+    else if (key == "tz_offset") cfg.tzOffsetMin = constrain(parseTzMinutes(val), -12 * 60, 14 * 60);
     else if (key == "auto_start") cfg.autoStart = n != 0;
     else if (key == "brightness") cfg.brightness = constrain(n, 8, 255);
     else if (key == "nmea_server") cfg.nmeaServer = n != 0;
@@ -68,9 +90,7 @@ bool configLoad(Config& cfg) {
 }
 
 bool configSave(const Config& cfg) {
-  SD.mkdir("/gpslogger");
-  File f = SD.open(CONFIG_PATH, FILE_WRITE);
-  if (!f) return false;
+  StreamString f;
   f.println("# GPS Logger configuration (edit on PC or in the app)");
   f.println("# gps_module: cap_lora1262 | unit_gps_v11 | unit_gps_at6558 | grove_nmea | custom");
   f.printf("gps_module=%s\n", GPS_PRESETS[cfg.gpsModule].key);
@@ -90,8 +110,8 @@ bool configSave(const Config& cfg) {
   f.printf("screen_timeout=%u\n", cfg.screenTimeoutSec);
   f.println("# max. seconds to wait for a fix after waking from deep sleep");
   f.printf("fix_timeout=%u\n", cfg.fixTimeoutSec);
-  f.println("# hours added to UTC for the displayed time (log files are always UTC)");
-  f.printf("tz_offset=%d\n", cfg.tzOffsetHours);
+  f.println("# added to UTC for the displayed time, hours or hours:minutes (log files are always UTC)");
+  f.printf("tz_offset=%s\n", tzText(cfg.tzOffsetMin).c_str());
   f.println("# 1 = start logging automatically after power on");
   f.printf("auto_start=%d\n", cfg.autoStart ? 1 : 0);
   f.printf("brightness=%u\n", cfg.brightness);
@@ -105,6 +125,13 @@ bool configSave(const Config& cfg) {
   f.printf("ap_ssid=%s\n", cfg.apSsid.c_str());
   f.printf("ap_pass=%s\n", cfg.apPass.c_str());
   f.printf("nmea_port=%u\n", cfg.nmeaPort);
-  f.close();
-  return true;
+
+  SD.mkdir("/gpslogger");
+  File out = SD.open(CONFIG_TMP_PATH, FILE_WRITE);
+  if (!out) return false;
+  bool ok = out.write((const uint8_t*)f.c_str(), f.length()) == f.length();
+  out.close();
+  if (!ok) return false;
+  SD.remove(CONFIG_PATH);  // FAT rename doesn't replace an existing file
+  return SD.rename(CONFIG_TMP_PATH, CONFIG_PATH);
 }

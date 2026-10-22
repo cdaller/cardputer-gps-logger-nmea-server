@@ -25,7 +25,9 @@ def make_dist(source, target, env):
         '"$PYTHONEXE"', '"$OBJCOPY"',
         "--chip", env.BoardConfig().get("build.mcu"),
         "merge_bin", "-o", '"%s"' % os.path.join(dist, "GPS-NMEA-Logger-full.bin"),
-        "--flash_mode", "dio", "--flash_size", "8MB",
+        # dio: what PlatformIO itself flashes for qio boards
+        "--flash_mode", "dio",
+        "--flash_size", env.BoardConfig().get("upload.flash_size", "8MB"),
     ] + ['"%s"' % i for i in images])
     env.Execute(env.subst(cmd))
 

@@ -141,7 +141,7 @@ nmea_log=0                # 1 = also log raw NMEA to .nmea
 deep_sleep=0
 screen_timeout=60         # seconds, 0 = never
 fix_timeout=60            # max. seconds to wait for a fix after deep sleep wake-up
-tz_offset=0               # hours added to UTC for the display
+tz_offset=0               # added to UTC for the display: hours or hours:minutes (+5:30)
 auto_start=0              # start logging after power on
 brightness=128
 nmea_server=0             # 1 = send NMEA over WiFi
@@ -149,7 +149,7 @@ wifi_mode=ap              # ap = own network, client = join wifi_ssid
 wifi_ssid=
 wifi_pass=
 ap_ssid=GPS-NMEA-Logger
-ap_pass=gpslogger         # empty = open network, else min. 8 characters
+ap_pass=k7rmx2qhwa        # random on first start; empty = open network, else min. 8 characters
 nmea_port=2000            # TCP server and UDP broadcast port
 ```
 
@@ -162,10 +162,15 @@ in `config.txt`.
 With `nmea_server=1` the Cardputer sends every NMEA sentence from the GPS over WiFi:
 to all TCP clients connected to `nmea_port` (up to 4) and as UDP broadcast to the same port.
 
-- **Own network** (`wifi_mode=ap`): join the WiFi `GPS-NMEA-Logger` (password `gpslogger`) with
-  the iPad. The Cardputer has the address `192.168.4.1`.
+- **Own network** (`wifi_mode=ap`): join the WiFi `GPS-NMEA-Logger` with the iPad, using the
+  password shown on the WiFi page (generated randomly on first start, stored as `ap_pass`).
+  The Cardputer has the address `192.168.4.1`.
 - **Existing network** (`wifi_mode=client`): the Cardputer joins `wifi_ssid`; its address
   is shown on the WiFi page.
+
+The NMEA sentences contain your position: every device that can reach the port gets it,
+and in client mode the UDP broadcast sends it to every device in that network. Use the own
+network, or a WiFi you trust.
 
 In the Garmin Boating app: *Menu > Paired devices > + > Add device*, enter
 host = the address above, port = `nmea_port` (default 2000) and TCP or UDP.

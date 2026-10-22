@@ -25,7 +25,7 @@ void GpsReader::end() {
 
 void GpsReader::openPort(uint32_t baud) {
   _serial.end();
-  _serial.setRxBufferSize(2048);
+  _serial.setRxBufferSize(8192);  // ~0.7 s at 115200 baud: SD writes and screenshots block the loop
   _serial.begin(baud, SERIAL_8N1, _rx, _tx);
   _baud = baud;
   _portOpenedMs = millis();

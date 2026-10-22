@@ -26,6 +26,7 @@ static const uint8_t TCA8418_ADDR = 0x34;           // ADV keyboard controller
 
 static const uint32_t MIN_SLEEP_INTERVAL_SEC = 15;  // below this, deep sleep is not worth it
 static const uint32_t MIN_SLEEP_MS = 3000;
+static const int MAX_SD_ERRORS = 3;                 // failed writes in a row until logging stops
 static const float HDOP_UERE_M = 5.0f;              // for the accuracy estimate
 static const uint32_t RTC_MAGIC = 0x47504C31;
 
@@ -37,12 +38,13 @@ struct RtcState {
   char baseName[48];
   uint32_t points;
   uint32_t detectedBaud;
+  uint64_t wakeAtMs;  // planned timer wake-up, on the RTC clock (rtcNowMs)
 };
 RTC_DATA_ATTR RtcState rtc;
 
 enum Page { PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP };
 // MAIN .. MENU are switched with Tab / G0; WIFI only with the NMEA server on
-static const int PAGE_CYCLE_COUNT = 7;
+static const int PAGE_CYCLE_COUNT = PAGE_MENU + 1;
 
 static Config cfg;
 static GpsReader gps;
@@ -63,6 +65,7 @@ static bool editing = false;   // text input for the selected setting
 static String editBuf;
 static int lastDeviceCount = 0;
 static Config cfgBeforeEdit;
+static int sdErrors = 0;       // failed point writes in a row
 
 // ---------------------------------------------------------------- colors
 
@@ -79,6 +82,12 @@ static const uint16_t COL_SAT_SEEN = 0x4A8B;  // grey: visible, not used
 
 // ---------------------------------------------------------------- helpers
 
+// Same reading as M5.Power.getBatteryVoltage(), but also usable in quiet
+// wake-ups before M5 is initialized, so all logged points are comparable.
+static int batteryMv() {
+  return analogReadMilliVolts(PIN_BATTERY) * 2;  // 1:2 voltage divider
+}
+
 static int batteryPctFromMv(int mv) {
   return constrain((mv - 3300) * 100 / (4150 - 3300), 0, 100);
 }
@@ -94,7 +103,7 @@ static int batteryMvUi() {
   uint32_t dt = now - lastSampleMs;
   if (avgMv == 0 || dt >= 1000) {
     lastSampleMs = now;
-    int mv = M5.Power.getBatteryVoltage();
+    int mv = batteryMv();
     avgMv = avgMv == 0 ? mv : avgMv + (mv - avgMv) * min(1.0f, dt / 30000.0f);
   }
   return (int)(avgMv + 0.5f);
@@ -103,6 +112,13 @@ static int batteryMvUi() {
 static void showStatus(const char* msg, uint32_t ms = 2500) {
   strlcpy(statusMsg, msg, sizeof(statusMsg));
   statusMsgUntil = millis() + ms;
+}
+
+// Milliseconds on the RTC clock, which keeps running in deep sleep (millis() restarts at boot).
+static uint64_t rtcNowMs() {
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  return (uint64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
 static bool canDeepSleep() {
@@ -138,14 +154,20 @@ static bool localTime(struct tm& out) {
   t.tm_min = g.time.minute();
   t.tm_sec = g.time.second();
   time_t epoch = mktime(&t);  // TZ is UTC on the ESP32 unless set
-  epoch += (time_t)cfg.tzOffsetHours * 3600;
+  epoch += (time_t)cfg.tzOffsetMin * 60;
   gmtime_r(&epoch, &out);
   return true;
 }
 
+// False without a fix, and for a fix that was already used: the loop may come
+// back before the GPS has sent the next one.
 static bool buildPoint(LogPoint& p, int batteryPct) {
+  static uint32_t lastDate = 0, lastTime = 0;
   TinyGPSPlus& g = gps.gps();
   if (!gps.hasFix() || !g.date.isValid() || !g.time.isValid() || g.date.year() < 2020) return false;
+  if (g.date.value() == lastDate && g.time.value() == lastTime) return false;
+  lastDate = g.date.value();
+  lastTime = g.time.value();
   p.year = g.date.year();
   p.month = g.date.month();
   p.day = g.date.day();
@@ -163,27 +185,35 @@ static bool buildPoint(LogPoint& p, int batteryPct) {
   return true;
 }
 
-static bool logPoint(int batteryPct) {
+enum LogResult { LOG_OK, LOG_NO_FIX, LOG_SD_ERROR };
+
+static LogResult logPoint(int batteryPct) {
   LogPoint p;
-  if (!buildPoint(p, batteryPct)) return false;
-  if (!logger::write(p, cfg.logFormat, rtc.baseName, sizeof(rtc.baseName))) {
-    showStatus("SD write error!");
-    return false;
-  }
+  if (!buildPoint(p, batteryPct)) return LOG_NO_FIX;
+  if (!logger::write(p, cfg.logFormat, rtc.baseName, sizeof(rtc.baseName))) return LOG_SD_ERROR;
   rtc.points++;
-  return true;
+  return LOG_OK;
 }
 
 static void startLogging() {
+  if (!sdOk) {  // card inserted later, or replaced after write errors
+    SD.end();
+    sdOk = logger::sdBegin();
+    if (!sdOk) {
+      showStatus("No SD card!");
+      return;
+    }
+  }
+  sdErrors = 0;
   rtc.logging = true;
   rtc.baseName[0] = '\0';
   rtc.points = 0;
   lastLogMs = 0;
-  showStatus(sdOk ? "Logging started" : "No SD card!");
+  showStatus("Logging started");
 }
 
 static void stopLogging() {
-  if (rtc.baseName[0]) logger::nmeaFlush(rtc.baseName);
+  if (rtc.baseName[0]) logger::nmeaFlush(rtc.baseName);  // also empties the buffer on SD errors
   rtc.logging = false;
   showStatus("Logging stopped");
 }
@@ -208,6 +238,7 @@ static void stopLogging() {
   rtc_gpio_pullup_en(PIN_WAKE_BTN);
   esp_sleep_enable_ext0_wakeup(PIN_WAKE_BTN, 0);
   esp_sleep_enable_timer_wakeup((uint64_t)sleepMs * 1000ULL);
+  rtc.wakeAtMs = rtcNowMs() + sleepMs;
   log_i("Deep sleep for %lu ms", (unsigned long)sleepMs);
   esp_deep_sleep_start();
 }
@@ -220,7 +251,11 @@ static uint32_t remainingIntervalMs(uint32_t sinceLogMs) {
 // Timer wake-up while logging: read GPS, log one point, sleep again.
 // Returns only if the user pressed G0 and wants the UI.
 static void quietWakeCycle() {
-  uint32_t start = millis();
+  // Measured from the planned wake-up, so boot time doesn't add up to a drift.
+  auto awakeMs = [] {
+    uint64_t now = rtcNowMs();
+    return now > rtc.wakeAtMs ? (uint32_t)(now - rtc.wakeAtMs) : 0;
+  };
   pinMode(PIN_WAKE_BTN, INPUT_PULLUP);
   if (rtc.isAdv) {
     pinMode(PIN_ADV_LORA_CS, OUTPUT);
@@ -233,19 +268,21 @@ static void quietWakeCycle() {
   if (!canDeepSleep()) return;  // config changed on the card, show UI
   startGps();
 
-  bool logged = false;
-  while (millis() - start < cfg.fixTimeoutSec * 1000UL) {
+  LogResult result = LOG_NO_FIX;
+  while (awakeMs() < cfg.fixTimeoutSec * 1000UL) {
     gps.update();
     if (gps.baudLocked() && cfg.gpsBaud == 0) rtc.detectedBaud = gps.baud();
     if (digitalRead(PIN_WAKE_BTN) == LOW) return;
-    if (gps.gps().location.isUpdated() && logPoint(batteryPctFromMv(analogReadMilliVolts(PIN_BATTERY) * 2))) {
-      logged = true;
-      break;
+    if (gps.gps().location.isUpdated()) {
+      result = logPoint(batteryPctFromMv(batteryMv()));
+      if (result != LOG_NO_FIX) break;  // SD error: try again at the next wake-up
     }
     delay(5);
   }
-  log_i("Quiet wake: %s after %lu ms", logged ? "logged" : "no fix", millis() - start);
-  uint32_t sleepMs = remainingIntervalMs(millis() - start);
+  log_i("Quiet wake: %s after %lu ms",
+        result == LOG_OK ? "logged" : result == LOG_SD_ERROR ? "SD error" : "no fix",
+        (unsigned long)awakeMs());
+  uint32_t sleepMs = remainingIntervalMs(awakeMs());
   enterDeepSleep(max(sleepMs, MIN_SLEEP_MS), false);
 }
 
@@ -410,8 +447,7 @@ static void drawMainPage() {
     canvas.setTextColor(COL_LABEL);
     snprintf(buf, sizeof(buf), "%04d-%02d-%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
     canvas.drawString(buf, 160, 110);
-    snprintf(buf, sizeof(buf), "UTC%+d", cfg.tzOffsetHours);
-    canvas.drawString(buf, 160, 121);
+    canvas.drawString("UTC" + tzText(cfg.tzOffsetMin), 160, 121);
   } else {
     drawRow(106, "TIME", "--:--:--", COL_NOFIX);
   }
@@ -621,14 +657,25 @@ static const uint32_t SCREEN_TOS[] = {0, 15, 30, 60, 120, 300};
 static const uint32_t FIX_TOS[] = {15, 30, 60, 90, 120, 180, 300};
 static const uint32_t BAUDS[] = {0, 4800, 9600, 19200, 38400, 57600, 115200, 230400};
 static const uint32_t BRIGHTS[] = {16, 48, 96, 128, 192, 255};
+// UTC offsets in use, in minutes
+static const int16_t TZ_OFFSETS[] = {
+  -720, -660, -600, -570, -540, -480, -420, -360, -300, -240, -210, -180, -120, -60, 0,
+  60, 120, 180, 210, 240, 270, 300, 330, 345, 360, 390, 420, 480, 525, 540, 570, 600,
+  630, 660, 720, 765, 780, 840,
+};
 
-template <size_t N>
-static uint32_t cycle(const uint32_t (&arr)[N], uint32_t cur, int dir) {
-  size_t i = 0;
-  while (i < N && arr[i] < cur) i++;  // nearest entry >= cur
-  if (i == N) i = N - 1;
-  else if (arr[i] != cur && dir > 0) i--;  // so that +1 lands on the next larger value
-  return arr[(i + N + dir) % N];
+// Next larger (dir > 0) or smaller entry of an ascending array, wrapping
+// around; cur doesn't need to be one of the entries.
+template <typename T, size_t N, typename V>
+static T cycle(const T (&arr)[N], V cur, int dir) {
+  if (dir > 0) {
+    for (size_t i = 0; i < N; i++)
+      if (arr[i] > cur) return arr[i];
+    return arr[0];
+  }
+  for (size_t i = N; i-- > 0;)
+    if (arr[i] < cur) return arr[i];
+  return arr[N - 1];
 }
 
 static String secondsText(uint32_t s) {
@@ -657,7 +704,7 @@ static String settingValue(int id) {
     case S_RX: return String(cfg.gpsRx);
     case S_TX: return String(cfg.gpsTx);
     case S_BAUD: return cfg.gpsBaud ? String(cfg.gpsBaud) : String("auto");
-    case S_TZ: return "UTC" + String(cfg.tzOffsetHours >= 0 ? "+" : "") + String(cfg.tzOffsetHours);
+    case S_TZ: return "UTC" + tzText(cfg.tzOffsetMin);
     case S_AUTOSTART: return cfg.autoStart ? "on" : "off";
     case S_BRIGHT: return String(cfg.brightness * 100 / 255) + " %";
     case S_SERVER: return cfg.nmeaServer ? "on" : "off";
@@ -669,6 +716,12 @@ static String settingValue(int id) {
     case S_APPASS: return cfg.apPass.length() ? String("****") : String("(open)");
   }
   return "";
+}
+
+// WiFi settings complete enough to start the NMEA server.
+static bool wifiConfigured() {
+  if (cfg.wifiClient) return cfg.wifiSsid.length() > 0;
+  return cfg.apSsid.length() > 0 && (cfg.apPass.length() == 0 || cfg.apPass.length() >= 8);
 }
 
 // ---- text input for SSIDs, passwords and the port
@@ -732,7 +785,7 @@ static void changeSetting(int id, int dir) {
     case S_RX: cfg.gpsRx = constrain(cfg.gpsRx + dir, -1, 48); cfg.gpsModule = GPS_CUSTOM; break;
     case S_TX: cfg.gpsTx = constrain(cfg.gpsTx + dir, -1, 48); cfg.gpsModule = GPS_CUSTOM; break;
     case S_BAUD: cfg.gpsBaud = cycle(BAUDS, cfg.gpsBaud, dir); break;
-    case S_TZ: cfg.tzOffsetHours = constrain(cfg.tzOffsetHours + dir, -12, 14); break;
+    case S_TZ: cfg.tzOffsetMin = cycle(TZ_OFFSETS, cfg.tzOffsetMin, dir); break;
     case S_AUTOSTART: cfg.autoStart = !cfg.autoStart; break;
     case S_SERVER: cfg.nmeaServer = !cfg.nmeaServer; break;
     case S_WIFIMODE: cfg.wifiClient = !cfg.wifiClient; break;
@@ -763,12 +816,15 @@ static void closeSettings() {
                      cfg.nmeaPort != cfgBeforeEdit.nmeaPort || cfg.wifiSsid != cfgBeforeEdit.wifiSsid ||
                      cfg.wifiPass != cfgBeforeEdit.wifiPass || cfg.apSsid != cfgBeforeEdit.apSsid ||
                      cfg.apPass != cfgBeforeEdit.apPass;
-  if (wifiChanged) {
+  bool wifiIncomplete = cfg.nmeaServer && !wifiConfigured();
+  if (wifiIncomplete) cfg.nmeaServer = false;
+  if (wifiChanged || wifiIncomplete) {
     if (cfg.nmeaServer) nmeaserver::begin(cfg);
     else nmeaserver::end();
   }
-  if (sdOk && configSave(cfg)) showStatus("Settings saved to SD");
-  else showStatus("No SD: settings not saved");
+  bool saved = sdOk && configSave(cfg);
+  if (wifiIncomplete) showStatus("WiFi incomplete: server off");
+  else showStatus(saved ? "Settings saved to SD" : "No SD: settings not saved");
   page = returnPage == PAGE_WIFI && !cfg.nmeaServer ? PAGE_MAIN : returnPage;
 }
 
@@ -842,12 +898,6 @@ static void drawHelpPage() {
 // ---------------------------------------------------------------- menu
 
 enum MenuId { M_LOGGING, M_SERVER, M_SETTINGS, M_HELP, M_SLEEP, M_COUNT };
-
-// WiFi settings complete enough to start the NMEA server.
-static bool wifiConfigured() {
-  if (cfg.wifiClient) return cfg.wifiSsid.length() > 0;
-  return cfg.apSsid.length() > 0 && (cfg.apPass.length() == 0 || cfg.apPass.length() >= 8);
-}
 
 static void toggleNmeaServer() {
   if (!cfg.nmeaServer && !wifiConfigured()) {
@@ -932,11 +982,13 @@ static void saveScreenshot() {
   draw();
   SD.mkdir("/gpslogger");
   SD.mkdir("/gpslogger/screenshots");
+  static int nextNum = 1;  // searched from the last free number, not from 1 each time
   char path[48];
-  for (int i = 1; i < 10000; i++) {
-    snprintf(path, sizeof(path), "/gpslogger/screenshots/%04d.bmp", i);
+  for (; nextNum < 10000; nextNum++) {
+    snprintf(path, sizeof(path), "/gpslogger/screenshots/%04d.bmp", nextNum);
     if (!SD.exists(path)) break;
   }
+  if (nextNum >= 10000) { showStatus("Screenshot folder full"); return; }
   File f = SD.open(path, FILE_WRITE);
   if (!f) { showStatus("SD write error!"); return; }
 
@@ -961,6 +1013,7 @@ static void saveScreenshot() {
     ok = f.write(row, rowBytes) == rowBytes;
   }
   f.close();
+  if (ok) nextNum++;
   showStatus(ok ? (String("Saved ") + (strrchr(path, '/') + 1)).c_str() : "SD write error!");
 }
 
@@ -1068,7 +1121,7 @@ static void handleInput() {
 
   if (M5.BtnA.wasHold()) {
     activity = true;
-    if (screenOn) rtc.logging ? stopLogging() : startLogging();
+    if (screenOn && !(page == PAGE_SETTINGS && editing)) rtc.logging ? stopLogging() : startLogging();
   } else if (M5.BtnA.wasClicked()) {
     activity = true;
     if (screenOn) {
@@ -1083,6 +1136,15 @@ static void handleInput() {
     lastInputMs = millis();
     if (!wasOn) setScreen(true);
   }
+}
+
+// Default AP password, so devices don't share a known one. Without letters
+// and digits that are easy to confuse (l/1, o/0).
+static String randomPassword() {
+  static const char CHARS[] = "abcdefghijkmnpqrstuvwxyz23456789";
+  String s;
+  for (int i = 0; i < 10; i++) s += CHARS[esp_random() % (sizeof(CHARS) - 1)];
+  return s;
 }
 
 static bool detectKeyboard() {
@@ -1125,9 +1187,16 @@ void setup() {
 
   configDefaults(cfg, rtc.isAdv);
   sdOk = logger::sdBegin();
-  if (sdOk && !configLoad(cfg)) configSave(cfg);  // first start: write defaults to SD
+  if (!sdOk || !configLoad(cfg)) {  // first start: own AP password, defaults to SD
+    cfg.apPass = randomPassword();
+    if (sdOk) configSave(cfg);
+  }
   M5.Display.setBrightness(cfg.brightness);
   startGps();
+  if (cfg.nmeaServer && !wifiConfigured()) {
+    cfg.nmeaServer = false;
+    showStatus("WiFi incomplete: server off", 4000);
+  }
   if (cfg.nmeaServer) nmeaserver::begin(cfg);
 
   if (!sdOk) showStatus("No SD card!", 4000);
@@ -1152,7 +1221,18 @@ void loop() {
 
   uint32_t now = millis();
   if (rtc.logging && sdOk && (lastLogMs == 0 || now - lastLogMs >= cfg.logIntervalSec * 1000UL)) {
-    if (logPoint(batteryPctFromMv(batteryMvUi()))) lastLogMs = now;
+    LogResult result = logPoint(batteryPctFromMv(batteryMvUi()));
+    if (result == LOG_OK) {
+      lastLogMs = now;
+      sdErrors = 0;
+    } else if (result == LOG_SD_ERROR && ++sdErrors >= MAX_SD_ERRORS) {
+      // Card removed or broken: stop, so the screen timeout works again
+      sdOk = false;
+      stopLogging();
+      showStatus("SD error: logging stopped", 5000);
+    } else if (result == LOG_SD_ERROR) {
+      showStatus("SD write error!");
+    }
   }
 
   // Screen timeout: deep sleep between points if possible, otherwise screen off

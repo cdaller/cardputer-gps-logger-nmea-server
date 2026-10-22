@@ -36,7 +36,7 @@ struct Config {
   bool deepSleep = false;
   uint16_t screenTimeoutSec = 60; // 0 = never
   uint16_t fixTimeoutSec = 60;    // max. time to wait for a fix after waking up
-  int8_t tzOffsetHours = 0;
+  int16_t tzOffsetMin = 0;        // minutes added to UTC for the display
   bool autoStart = false;
   uint8_t brightness = 128;
   bool nmeaServer = false;        // serve NMEA over WiFi (TCP + UDP)
@@ -57,3 +57,4 @@ struct Config {
 void configDefaults(Config& cfg, bool isAdv);
 bool configLoad(Config& cfg);        // false if no file (cfg unchanged)
 bool configSave(const Config& cfg);
+String tzText(int16_t minutes);      // "+1", "+5:30", "-3:30"
