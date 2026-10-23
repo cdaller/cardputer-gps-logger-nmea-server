@@ -16,6 +16,7 @@
 #include "gps.h"
 #include "logger.h"
 #include "nmea_server.h"
+#include "tracks.h"
 #include "version.h"
 
 static const gpio_num_t PIN_BACKLIGHT = GPIO_NUM_38;
@@ -42,7 +43,10 @@ struct RtcState {
 };
 RTC_DATA_ATTR RtcState rtc;
 
-enum Page { PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP };
+enum Page {
+  PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP,
+  PAGE_TRACKS, PAGE_TRACK_INFO, PAGE_TRACK_MAP
+};
 // MAIN .. MENU are switched with Tab / G0; WIFI only with the NMEA server on
 static const int PAGE_CYCLE_COUNT = PAGE_MENU + 1;
 
@@ -52,7 +56,7 @@ static M5Canvas canvas(&M5.Display);
 static bool sdOk = false;
 static bool hasKeyboard = false;
 static Page page = PAGE_MAIN;
-static Page returnPage = PAGE_MAIN;  // where settings / help go back to
+static Page returnPage = PAGE_MAIN;  // where settings / help / tracks go back to
 static int menuSel = 0;
 static uint32_t lastLogMs = 0;       // 0 = nothing logged since start/wake
 static uint32_t lastInputMs = 0;
@@ -66,6 +70,11 @@ static String editBuf;
 static int lastDeviceCount = 0;
 static Config cfgBeforeEdit;
 static int sdErrors = 0;       // failed point writes in a row
+static std::vector<tracks::FileInfo> trackFiles;
+static int trackSel = 0;
+static bool trackDeleteAsk = false;
+static int trackAction = -1;   // selection in the action popup, -1 = closed
+static tracks::Track track;    // loaded for the info and map pages
 
 // ---------------------------------------------------------------- colors
 
@@ -886,7 +895,7 @@ static void drawHelpPage() {
   const char* lines[] = {
     "Enter/R  start / stop logging",
     "Tab ,/ 1-7  page (1 pos .. 7 menu)",
-    "S  settings   H  this help",
+    "S settings  T tracks  H help",
     "Z  screen off/sleep   P  screenshot",
     "G0 click: page  hold: rec",
     "G0 wakes from deep sleep",
@@ -897,7 +906,7 @@ static void drawHelpPage() {
 
 // ---------------------------------------------------------------- menu
 
-enum MenuId { M_LOGGING, M_SERVER, M_SETTINGS, M_HELP, M_SLEEP, M_COUNT };
+enum MenuId { M_LOGGING, M_SERVER, M_SETTINGS, M_TRACKS, M_HELP, M_SLEEP, M_COUNT };
 
 static void toggleNmeaServer() {
   if (!cfg.nmeaServer && !wifiConfigured()) {
@@ -912,12 +921,20 @@ static void toggleNmeaServer() {
 }
 
 // Font4 needs ~24 px per line with descenders: rows touch, so the selection
-// is drawn before all labels and doesn't cover the row above.
+// is drawn before all labels and doesn't cover the row above. Only 5 rows
+// fit, the list scrolls with the selection.
 static void drawMenuPage() {
-  const int top = 19, rowH = 23;
-  canvas.fillRoundRect(2, top + menuSel * rowH, 236, rowH - 2, 5, COL_SEL);
-  for (int id = 0; id < M_COUNT; id++) {
-    int y = top + id * rowH;
+  const int top = 19, rowH = 23, rows = 5;
+  static int first = 0;
+  first = constrain(first, menuSel - rows + 1, menuSel);
+  canvas.fillRoundRect(2, top + (menuSel - first) * rowH, 236, rowH - 2, 5, COL_SEL);
+  if (first > 0) canvas.fillTriangle(229, top + 8, 225, top + 14, 233, top + 14, COL_LABEL);
+  if (first + rows < M_COUNT) {
+    int y = top + rows * rowH - 9;
+    canvas.fillTriangle(229, y + 6, 225, y, 233, y, COL_LABEL);
+  }
+  for (int id = first; id < first + rows; id++) {
+    int y = top + (id - first) * rowH;
     bool sel = id == menuSel;
     String label;
     uint16_t col = TFT_WHITE;
@@ -931,6 +948,7 @@ static void drawMenuPage() {
         col = cfg.nmeaServer ? TFT_ORANGE : TFT_SKYBLUE;
         break;
       case M_SETTINGS: label = "Settings"; col = TFT_CYAN; break;
+      case M_TRACKS: label = "Tracks"; col = TFT_GREENYELLOW; break;
       case M_HELP: label = "Help / keys"; col = TFT_YELLOW; break;
       case M_SLEEP:
         label = canDeepSleep() && lastLogMs ? "Deep sleep now" : "Screen off";
@@ -944,11 +962,193 @@ static void drawMenuPage() {
   }
 }
 
+// ---------------------------------------------------------------- tracks
+
+static void drawMessageBox(const char* msg) {
+  canvas.setFont(&fonts::Font2);
+  int w = canvas.textWidth(msg) + 16;
+  int x = (240 - w) / 2;
+  canvas.fillRoundRect(x, 56, w, 24, 5, TFT_NAVY);
+  canvas.drawRoundRect(x, 56, w, 24, 5, TFT_WHITE);
+  canvas.setTextColor(TFT_WHITE);
+  canvas.setTextDatum(middle_center);
+  canvas.drawString(msg, 120, 68);
+  canvas.setTextDatum(top_left);
+}
+
+// Title bar of the track pages, like the one of the settings.
+static void drawTitleBar(const String& title, const char* keys) {
+  canvas.fillRect(0, 0, 240, 18, COL_SEL);
+  canvas.setFont(&fonts::Font2);
+  canvas.setTextColor(TFT_WHITE);
+  canvas.drawString(title, 3, 1);
+  canvas.setTextColor(COL_LABEL);
+  canvas.setTextDatum(top_right);
+  canvas.drawString(keys, 237, 1);
+  canvas.setTextDatum(top_left);
+}
+
+static uint16_t trackTypeColor(uint8_t type) {
+  return type == tracks::TYPE_CSV ? TFT_CYAN : type == tracks::TYPE_GPX ? TFT_YELLOW : TFT_MAGENTA;
+}
+
+static String sizeText(uint32_t bytes) {
+  if (bytes < 1024) return String(bytes) + " B";
+  if (bytes < 1024 * 1024) return String(bytes / 1024.0f, 1) + " KB";
+  return String(bytes / (1024.0f * 1024), 1) + " MB";
+}
+
+// Local date and time, with the configured UTC offset.
+static String dateTimeText(time_t utc) {
+  if (!utc) return "--";
+  time_t local = utc + (time_t)cfg.tzOffsetMin * 60;
+  struct tm t;
+  gmtime_r(&local, &t);
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+           t.tm_hour, t.tm_min, t.tm_sec);
+  return buf;
+}
+
+// Blue (low) - green - red (high), f from 0 to 1.
+static uint16_t altColor(float f) {
+  f = constrain(f, 0.0f, 1.0f);
+  if (f < 0.5f) return canvas.color565(0, f * 2 * 255, (1 - f * 2) * 255);
+  return canvas.color565((f - 0.5f) * 2 * 255, (1 - (f - 0.5f) * 2) * 255, 0);
+}
+
+static float altFraction(float alt) {
+  return track.altMax > track.altMin ? (alt - track.altMin) / (track.altMax - track.altMin) : 0.5f;
+}
+
+enum TrackActionId { A_INFO, A_MAP, A_DELETE, A_COUNT };
+static const char* const TRACK_ACTION_NAMES[A_COUNT] = {"Info", "Map", "Delete"};
+static const char* const TRACK_ACTION_KEYS[A_COUNT] = {"I", "M", "D"};  // shortcuts in the list
+
+// Actions for the selected file, with their shortcut keys on the right.
+static void drawTrackActions() {
+  const int x = 120, y = 34, w = 110, rowH = 18;
+  bool nmea = trackFiles[trackSel].type == tracks::TYPE_NMEA;
+  canvas.fillRoundRect(x, y, w, A_COUNT * rowH + 6, 5, TFT_NAVY);
+  canvas.drawRoundRect(x, y, w, A_COUNT * rowH + 6, 5, TFT_WHITE);
+  for (int a = 0; a < A_COUNT; a++) {
+    int ry = y + 3 + a * rowH;
+    bool sel = a == trackAction;
+    bool disabled = nmea && a != A_DELETE;
+    if (sel) canvas.fillRoundRect(x + 3, ry, w - 6, rowH, 3, COL_SEL);
+    canvas.setTextColor(disabled ? 0x4208 : sel ? TFT_WHITE : COL_LABEL);
+    canvas.drawString(TRACK_ACTION_NAMES[a], x + 10, ry + 1);
+    canvas.setTextColor(COL_LABEL);
+    canvas.setTextDatum(top_right);
+    canvas.drawString(TRACK_ACTION_KEYS[a], x + w - 10, ry + 1);
+    canvas.setTextDatum(top_left);
+  }
+}
+
+static void drawTracksPage() {
+  drawTitleBar("TRACKS", ";. select Ent actions");
+  int n = trackFiles.size();
+  if (n == 0) {
+    canvas.setTextColor(COL_LABEL);
+    canvas.drawString("No tracks on the SD card", 6, 22);
+    return;
+  }
+  const int rows = 7, rowH = 16;
+  int first = constrain(trackSel - rows / 2, 0, max(0, n - rows));
+  for (int i = first; i < min(n, first + rows); i++) {
+    const tracks::FileInfo& f = trackFiles[i];
+    int y = 20 + (i - first) * rowH;
+    bool sel = i == trackSel;
+    if (sel) canvas.fillRoundRect(0, y, 240, rowH, 3, COL_SEL);
+    canvas.setTextColor(sel ? TFT_WHITE : COL_LABEL);
+    canvas.drawString(f.name.substring(0, f.name.lastIndexOf('.')), 6, y);
+    canvas.setTextColor(trackTypeColor(f.type));
+    canvas.drawString(tracks::TYPE_NAMES[f.type], 130, y);
+    canvas.setTextColor(sel ? TFT_WHITE : COL_LABEL);
+    canvas.setTextDatum(top_right);
+    canvas.drawString(sizeText(f.size), 236, y);
+    canvas.setTextDatum(top_left);
+  }
+  if (trackAction >= 0) drawTrackActions();
+  if (trackDeleteAsk) drawMessageBox(("Delete " + trackFiles[trackSel].name + "? Y / N").c_str());
+}
+
+static void drawTrackInfoPage() {
+  drawTitleBar(trackFiles[trackSel].name, "M map ` back");
+  drawLabeled(20, "Start", dateTimeText(track.start), TFT_WHITE);
+  drawLabeled(34, "End", dateTimeText(track.end), TFT_WHITE);
+  String duration = "--";
+  if (track.start && track.end >= track.start) {
+    uint32_t s = track.end - track.start;
+    char buf[16];
+    if (s >= 3600) snprintf(buf, sizeof(buf), "%luh %02lum", (unsigned long)(s / 3600), (unsigned long)(s / 60 % 60));
+    else snprintf(buf, sizeof(buf), "%lum %02lus", (unsigned long)(s / 60), (unsigned long)(s % 60));
+    duration = buf;
+  }
+  drawLabeled(48, "Duration", duration + "  (" + String(track.count) + " points)", TFT_CYAN);
+  drawLabeled(62, "Distance", String(track.distM / 1000, 2) + " km", TFT_CYAN);
+  drawLabeled(76, "Altitude", String(track.altMin, 0) + " - " + String(track.altMax, 0) + " m", COL_ALT);
+
+  // Altitude profile over the points, colored like the map
+  const int x0 = 3, w = 234, bottom = 133, h = 38;
+  canvas.drawFastHLine(x0, bottom, w, COL_BAR);
+  for (int x = 0; x < w; x++) {
+    float f = altFraction(track.pts[x * track.n / w].alt);
+    int hh = 1 + f * (h - 1);
+    canvas.drawFastVLine(x0 + x, bottom - hh, hh, altColor(f));
+  }
+}
+
+// Track points as lines, colored by altitude; north is up, equal scale in
+// both directions, fitted into the screen.
+static void drawTrackMapPage() {
+  drawTitleBar(trackFiles[trackSel].name, "I info ` back");
+  const int x0 = 4, y0 = 22, w = 232, h = 98;
+  float cosLat = cos((track.latMin + track.latMax) / 2 * DEG_TO_RAD);
+  float dx = (track.lonMax - track.lonMin) * cosLat, dy = track.latMax - track.latMin;
+  float scale = min(dx > 0 ? w / dx : INFINITY, dy > 0 ? h / dy : INFINITY);
+  if (isinf(scale)) scale = 0;  // only one position
+  float left = x0 + (w - dx * scale) / 2, base = y0 + (h + dy * scale) / 2;
+  auto px = [&](const tracks::Point& p) { return (int)(left + (p.lon - track.lonMin) * cosLat * scale); };
+  auto py = [&](const tracks::Point& p) { return (int)(base - (p.lat - track.latMin) * scale); };
+  for (int i = 1; i < track.n; i++) {
+    const tracks::Point &a = track.pts[i - 1], &b = track.pts[i];
+    canvas.drawLine(px(a), py(a), px(b), py(b), altColor(altFraction(b.alt)));
+  }
+  const tracks::Point &first = track.pts[0], &last = track.pts[track.n - 1];
+  canvas.fillCircle(px(first), py(first), 3, TFT_GREEN);
+  canvas.drawCircle(px(last), py(last), 3, TFT_RED);
+
+  canvas.setFont(&fonts::Font0);
+  canvas.setTextColor(altColor(0));
+  String low = String(track.altMin, 0);
+  canvas.drawString(low, 3, 126);
+  int x = 3 + canvas.textWidth(low);
+  canvas.setTextColor(COL_LABEL);
+  canvas.drawString(" - ", x, 126);
+  x += canvas.textWidth(" - ");
+  canvas.setTextColor(altColor(1));
+  canvas.drawString(String(track.altMax, 0) + " m", x, 126);
+  if (scale > 0) {  // width of the map area, 1 degree latitude = 111.32 km
+    float km = w / scale * 111.32f;
+    canvas.setTextColor(COL_LABEL);
+    canvas.setTextDatum(top_right);
+    canvas.drawString("width " + (km < 1 ? String(km * 1000, 0) + " m" : String(km, 1) + " km"), 237, 126);
+    canvas.setTextDatum(top_left);
+  }
+}
+
 static void draw() {
   canvas.fillScreen(COL_BG);
   canvas.setTextDatum(top_left);
   if (page == PAGE_SETTINGS) {
     drawSettingsPage();
+  } else if (page == PAGE_TRACKS) {
+    drawTracksPage();
+  } else if (page == PAGE_TRACK_INFO) {
+    drawTrackInfoPage();
+  } else if (page == PAGE_TRACK_MAP) {
+    drawTrackMapPage();
   } else {
     drawStatusBar();
     if (page == PAGE_MAIN) drawMainPage();
@@ -960,17 +1160,7 @@ static void draw() {
     else if (page == PAGE_MENU) drawMenuPage();
     else drawHelpPage();
   }
-  if (millis() < statusMsgUntil) {
-    canvas.setFont(&fonts::Font2);
-    int w = canvas.textWidth(statusMsg) + 16;
-    int x = (240 - w) / 2;
-    canvas.fillRoundRect(x, 56, w, 24, 5, TFT_NAVY);
-    canvas.drawRoundRect(x, 56, w, 24, 5, TFT_WHITE);
-    canvas.setTextColor(TFT_WHITE);
-    canvas.setTextDatum(middle_center);
-    canvas.drawString(statusMsg, 120, 68);
-    canvas.setTextDatum(top_left);
-  }
+  if (millis() < statusMsgUntil) drawMessageBox(statusMsg);
   canvas.pushSprite(0, 0);
 }
 
@@ -1051,11 +1241,59 @@ static void openHelp() {
   page = PAGE_HELP;
 }
 
+static void openTracks() {
+  if (!sdOk) { showStatus("No SD card!"); return; }
+  trackFiles = tracks::list();
+  trackSel = 0;
+  trackDeleteAsk = false;
+  trackAction = -1;
+  returnPage = page;
+  page = PAGE_TRACKS;
+}
+
+// Info or map page of the selected file; the file is read only when coming from the list.
+static void openTrack(Page p) {
+  if (trackFiles.empty()) return;
+  const tracks::FileInfo& f = trackFiles[trackSel];
+  if (f.type == tracks::TYPE_NMEA) { showStatus("No info / map for NMEA files"); return; }
+  if (page == PAGE_TRACKS) {
+    showStatus("Reading track...", 60000);
+    draw();
+    bool ok = tracks::load(f, track);
+    statusMsgUntil = 0;
+    if (!ok) { showStatus("No track points found"); return; }
+  }
+  page = p;
+}
+
+static void askDeleteTrack() {
+  if (trackFiles.empty()) return;
+  String base = tracks::path(trackFiles[trackSel]);
+  base.remove(base.lastIndexOf('.'));
+  if (rtc.logging && base == rtc.baseName) showStatus("Track is being logged");
+  else trackDeleteAsk = true;
+}
+
+static void deleteTrack() {
+  const tracks::FileInfo& f = trackFiles[trackSel];
+  if (!tracks::remove(f)) { showStatus("SD error: not deleted"); return; }
+  showStatus(("Deleted " + f.name).c_str());
+  trackFiles.erase(trackFiles.begin() + trackSel);
+  trackSel = min(trackSel, max(0, (int)trackFiles.size() - 1));
+}
+
+static void runTrackAction(int a) {
+  if (a == A_INFO) openTrack(PAGE_TRACK_INFO);
+  else if (a == A_MAP) openTrack(PAGE_TRACK_MAP);
+  else askDeleteTrack();
+}
+
 static void menuSelect(int id) {
   switch (id) {
     case M_LOGGING: rtc.logging ? stopLogging() : startLogging(); break;
     case M_SERVER: toggleNmeaServer(); break;
     case M_SETTINGS: openSettings(); break;
+    case M_TRACKS: openTracks(); break;
     case M_HELP: openHelp(); break;
     case M_SLEEP: sleepNowIfPossible(); break;
   }
@@ -1078,6 +1316,33 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     page = returnPage;
     return;
   }
+  if (page == PAGE_TRACKS) {
+    int n = trackFiles.size();
+    int shortcut = c == 'i' ? A_INFO : c == 'm' ? A_MAP : c == 'd' ? A_DELETE : -1;
+    if (trackDeleteAsk) {
+      trackDeleteAsk = false;
+      if (c == 'y') deleteTrack();
+    } else if (trackAction >= 0) {
+      if (c == ';') trackAction = (trackAction + A_COUNT - 1) % A_COUNT;
+      else if (c == '.') trackAction = (trackAction + 1) % A_COUNT;
+      else if (enter || shortcut >= 0 || c == '`' || del) {
+        int a = enter ? trackAction : shortcut;
+        trackAction = -1;
+        if (a >= 0) runTrackAction(a);
+      }
+    } else if (c == ';' && n) trackSel = (trackSel + n - 1) % n;
+    else if (c == '.' && n) trackSel = (trackSel + 1) % n;
+    else if (enter && n) trackAction = A_INFO;
+    else if (shortcut >= 0) runTrackAction(shortcut);
+    else if (c == '`' || del) page = returnPage;
+    return;
+  }
+  if (page == PAGE_TRACK_INFO || page == PAGE_TRACK_MAP) {
+    if (c == 'i') page = PAGE_TRACK_INFO;
+    else if (c == 'm') page = PAGE_TRACK_MAP;
+    else if (c == '`' || del || enter) page = PAGE_TRACKS;
+    return;
+  }
   if (page == PAGE_MENU) {
     if (c == ';') { menuSel = (menuSel + M_COUNT - 1) % M_COUNT; return; }
     if (c == '.') { menuSel = (menuSel + 1) % M_COUNT; return; }
@@ -1093,6 +1358,7 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
   else if (tab || c == '/' || c == ' ') nextPage(+1);
   else if (c == ',') nextPage(-1);
   else if (c == 's') openSettings();
+  else if (c == 't') openTracks();
   else if (c == 'h') openHelp();
   else if (c == 'z') sleepNowIfPossible();
   else if (c == 'p') saveScreenshot();
@@ -1128,6 +1394,10 @@ static void handleInput() {
       if (page == PAGE_SETTINGS && editing) editing = false;
       else if (page == PAGE_SETTINGS) closeSettings();
       else if (page == PAGE_HELP) page = returnPage;
+      else if (page == PAGE_TRACKS && trackDeleteAsk) trackDeleteAsk = false;
+      else if (page == PAGE_TRACKS && trackAction >= 0) trackAction = -1;
+      else if (page == PAGE_TRACKS) page = returnPage;
+      else if (page == PAGE_TRACK_INFO || page == PAGE_TRACK_MAP) page = PAGE_TRACKS;
       else nextPage(+1);
     }
   }

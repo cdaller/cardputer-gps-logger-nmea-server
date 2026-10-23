@@ -26,8 +26,11 @@ Cardputer v1.x).
 - Signal page: signal strength (SNR, dB-Hz) of every satellite in view as a bar chart,
   green = used in the fix; letters below the bars: G GPS, R GLONASS, E Galileo,
   C BeiDou, J QZSS, S SBAS
-- Menu page: start/stop logging, start/stop NMEA server, settings, help, screen off /
+- Menu page: start/stop logging, start/stop NMEA server, settings, tracks, help, screen off /
   deep sleep - no need to remember key letters
+- Tracks page: all track files on the SD card with type and size, newest first; delete them,
+  show start / end time, duration, distance and altitude profile, or draw the track as a map
+  colored by altitude (CSV and GPX files)
 - Logging to `/gpslogger/tracks/YYYYMMDD_HHMMSS.csv` / `.gpx` (UTC time stamps).
   The GPX file is closed after every point, so it stays valid if power is lost.
 - Optional raw NMEA log (`.nmea` next to the track): all sentences from the GPS,
@@ -117,10 +120,11 @@ to the `creator` attribute of GPX files.
 | `1` ... `7`        | jump to page: 1 position, 2 big, 3 details, 4 satellites, 5 signal, 6 WiFi, 7 menu |
 | `;` `.` + `Enter`  | menu page: select item (up/down arrow keys) and run it |
 | `S`                | settings (`;` `.` select, `,` `/` change, `` ` `` / `Del` save & exit) |
+| `T`                | tracks (`;` `.` select, `Enter` actions: info / map / delete; shortcuts `I` `M` `D`, `` ` `` / `Del` back) |
 | `H`                | help                                    |
 | `Z`                | screen off now (or deep sleep, if active) |
 | `P`                | screenshot of the current page as BMP to `/gpslogger/screenshots/` |
-| **G0 click**       | next page / leave settings / help       |
+| **G0 click**       | next page / leave settings / help / tracks |
 | **G0 hold**        | start / stop logging                    |
 
 Any key turns the screen back on. G0 wakes the device from deep sleep.
@@ -207,3 +211,14 @@ is found within `fix_timeout` seconds, that point is skipped. Press **G0** to ge
 The GPS module itself stays powered so it keeps a hot fix; it consumes far more power than
 the sleeping ESP32 (typically 20-40 mA), so longer intervals save mainly the display and CPU
 power. With intervals below 15 s only the screen is switched off.
+
+## Battery Life
+
+From fully loaded battery to the last entry written in the log files:
+
+* log every 5 seconds, write csv and gpx, deep sleep off: 6h 15min
+
+| log interval | logs     | deep sleep | duration |
+| ------------ | -------- | ---------- | -------- |
+|  5 sec       | csv, gpx | off        | 6h 15min |
+| 30 sec       | csv, gpx | off        |          |
