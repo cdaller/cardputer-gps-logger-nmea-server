@@ -4,7 +4,8 @@
 
 // Serves the raw NMEA sentences from the GPS over WiFi, e.g. for the Garmin
 // Boating app: TCP server and UDP broadcast on the same port. The WiFi is
-// either an own access point or an existing network (client mode).
+// either an own access point or an existing network (client mode). The web
+// page (web.h) runs along with it.
 namespace nmeaserver {
 void begin(const Config& cfg);
 void end();

@@ -18,6 +18,7 @@
 #include "nmea_server.h"
 #include "tracks.h"
 #include "version.h"
+#include "web.h"
 
 static const gpio_num_t PIN_BACKLIGHT = GPIO_NUM_38;
 static const gpio_num_t PIN_WAKE_BTN = GPIO_NUM_0;  // G0 / BtnA on Cardputer and ADV
@@ -31,6 +32,24 @@ static const int MAX_SD_ERRORS = 3;                 // failed writes in a row un
 static const float HDOP_UERE_M = 5.0f;              // for the accuracy estimate
 static const uint32_t RTC_MAGIC = 0x47504C31;
 
+// Recording filter. A fix with a worse HDOP than this (~25 m) is never recorded.
+static const float MAX_HDOP = 5.0f;
+// Smart mode: a point at turns and speed changes, but not for moves below
+// the fix accuracy (noise), and at least every SMART_MAX_SEC / SMART_MAX_DIST_M.
+static const float SMART_MIN_DIST_M = 5;
+static const float SMART_MAX_DIST_M = 200;
+static const uint32_t SMART_MAX_SEC = 60;
+static const float SMART_TURN_DEG = 20;
+static const float SMART_TURN_MIN_KMH = 3;    // course over ground is noise below this
+static const float SMART_SPEED_KMH = 5;       // speed change: at least this ...
+static const float SMART_SPEED_FRACTION = 0.25f;  // ... and this part of the last speed
+// Auto pause: paused after PAUSE_AFTER_SEC below PAUSE_KMH, resumed at
+// RESUME_KMH or when moved more than RESUME_DIST_M (slow walk, low speed readings).
+static const float PAUSE_KMH = 1.5f;
+static const float RESUME_KMH = 3;
+static const uint32_t PAUSE_AFTER_SEC = 10;
+static const float RESUME_DIST_M = 20;
+
 // Survives deep sleep.
 struct RtcState {
   uint32_t magic;
@@ -40,6 +59,13 @@ struct RtcState {
   uint32_t points;
   uint32_t detectedBaud;
   uint64_t wakeAtMs;  // planned timer wake-up, on the RTC clock (rtcNowMs)
+  // Recording filter: last recorded point and auto pause state
+  bool hasLast;
+  double lastLat, lastLon;
+  float lastSpeedKmh, lastCourseDeg;
+  uint64_t lastSavedMs;   // rtcNowMs
+  bool paused;
+  uint64_t stillSinceMs;  // rtcNowMs, 0 = moving
 };
 RTC_DATA_ATTR RtcState rtc;
 
@@ -131,7 +157,8 @@ static uint64_t rtcNowMs() {
 }
 
 static bool canDeepSleep() {
-  return rtc.logging && cfg.deepSleep && cfg.logIntervalSec >= MIN_SLEEP_INTERVAL_SEC && sdOk &&
+  return rtc.logging && cfg.deepSleep && cfg.logMode == LOG_MODE_TIME &&
+         cfg.logIntervalSec >= MIN_SLEEP_INTERVAL_SEC && sdOk &&
          !cfg.nmeaServer;  // WiFi would be off while sleeping
 }
 
@@ -194,13 +221,64 @@ static bool buildPoint(LogPoint& p, int batteryPct) {
   return true;
 }
 
-enum LogResult { LOG_OK, LOG_NO_FIX, LOG_SD_ERROR };
+// LOG_SKIPPED: fix not accurate enough or not a key point, try the next one.
+// LOG_PAUSED: standing still, counts like a logged point for the interval.
+enum LogResult { LOG_OK, LOG_NO_FIX, LOG_SKIPPED, LOG_PAUSED, LOG_SD_ERROR };
+
+static float angleDiff(float a, float b) {
+  return fabsf(fmodf(a - b + 540, 360) - 180);
+}
+
+// Smart mode: turn, speed change, or too long since the last point.
+static bool isKeyPoint(const LogPoint& p, double distM, uint64_t now) {
+  if (distM < max(SMART_MIN_DIST_M, p.hdop * HDOP_UERE_M)) return false;
+  if (distM >= SMART_MAX_DIST_M || now - rtc.lastSavedMs >= SMART_MAX_SEC * 1000ULL) return true;
+  if (fabsf(p.speedKmh - rtc.lastSpeedKmh) >= max(SMART_SPEED_KMH, rtc.lastSpeedKmh * SMART_SPEED_FRACTION))
+    return true;
+  return p.speedKmh >= SMART_TURN_MIN_KMH && rtc.lastSpeedKmh >= SMART_TURN_MIN_KMH &&
+         angleDiff(p.courseDeg, rtc.lastCourseDeg) >= SMART_TURN_DEG;
+}
+
+// Whether a new fix is recorded. Time mode only gets here when the interval is due.
+static LogResult filterPoint(const LogPoint& p) {
+  if (p.hdop <= 0 || p.hdop > MAX_HDOP) return LOG_SKIPPED;
+  uint64_t now = rtcNowMs();
+  double distM = rtc.hasLast ? TinyGPSPlus::distanceBetween(rtc.lastLat, rtc.lastLon, p.lat, p.lon) : 0;
+  if (!cfg.autoPause) {
+    rtc.paused = false;
+  } else if (p.speedKmh < PAUSE_KMH) {
+    if (!rtc.stillSinceMs) rtc.stillSinceMs = now;
+    if (now - rtc.stillSinceMs >= PAUSE_AFTER_SEC * 1000ULL) rtc.paused = true;
+  } else {
+    rtc.stillSinceMs = 0;
+    if (p.speedKmh >= RESUME_KMH) rtc.paused = false;
+  }
+  if (rtc.paused && distM > max(RESUME_DIST_M, p.hdop * HDOP_UERE_M)) {
+    rtc.paused = false;
+    rtc.stillSinceMs = 0;
+  }
+  if (rtc.paused) return LOG_PAUSED;
+  if (!rtc.hasLast) return LOG_OK;
+  switch (cfg.logMode) {
+    case LOG_MODE_SMART: return isKeyPoint(p, distM, now) ? LOG_OK : LOG_SKIPPED;
+    case LOG_MODE_DISTANCE: return distM >= cfg.logDistanceM ? LOG_OK : LOG_SKIPPED;
+    default: return LOG_OK;
+  }
+}
 
 static LogResult logPoint(int batteryPct) {
   LogPoint p;
   if (!buildPoint(p, batteryPct)) return LOG_NO_FIX;
+  LogResult result = filterPoint(p);
+  if (result != LOG_OK) return result;
   if (!logger::write(p, cfg.logFormat, rtc.baseName, sizeof(rtc.baseName))) return LOG_SD_ERROR;
   rtc.points++;
+  rtc.hasLast = true;
+  rtc.lastLat = p.lat;
+  rtc.lastLon = p.lon;
+  rtc.lastSpeedKmh = p.speedKmh;
+  rtc.lastCourseDeg = p.courseDeg;
+  rtc.lastSavedMs = rtcNowMs();
   return LOG_OK;
 }
 
@@ -217,6 +295,9 @@ static void startLogging() {
   rtc.logging = true;
   rtc.baseName[0] = '\0';
   rtc.points = 0;
+  rtc.hasLast = false;
+  rtc.paused = false;
+  rtc.stillSinceMs = 0;
   lastLogMs = 0;
   showStatus("Logging started");
 }
@@ -284,12 +365,13 @@ static void quietWakeCycle() {
     if (digitalRead(PIN_WAKE_BTN) == LOW) return;
     if (gps.gps().location.isUpdated()) {
       result = logPoint(batteryPctFromMv(batteryMv()));
-      if (result != LOG_NO_FIX) break;  // SD error: try again at the next wake-up
+      // Inaccurate fix: wait for a better one. SD error: try again at the next wake-up.
+      if (result != LOG_NO_FIX && result != LOG_SKIPPED) break;
     }
     delay(5);
   }
   log_i("Quiet wake: %s after %lu ms",
-        result == LOG_OK ? "logged" : result == LOG_SD_ERROR ? "SD error" : "no fix",
+        result == LOG_OK ? "logged" : result == LOG_PAUSED ? "paused" : result == LOG_SD_ERROR ? "SD error" : "no fix",
         (unsigned long)awakeMs());
   uint32_t sleepMs = remainingIntervalMs(awakeMs());
   enterDeepSleep(max(sleepMs, MIN_SLEEP_MS), false);
@@ -341,7 +423,7 @@ static void drawStatusBar() {
     bool blink = (millis() / 500) % 2;
     canvas.fillCircle(7, 9, 5, blink ? TFT_RED : 0x7800);
     canvas.setTextColor(TFT_RED);
-    String rec = "REC " + String(rtc.points);
+    String rec = (rtc.paused ? "PAUSE " : "REC ") + String(rtc.points);
     canvas.drawString(rec, 15, 1);
     left = 15 + canvas.textWidth(rec);
   } else {
@@ -537,7 +619,9 @@ static void drawDetailsPage() {
        (unsigned long)gps.baud(), cfg.gpsBaud == 0 ? "(A)" : "");
   line(TFT_WHITE, "NMEA ok %lu  err %lu", (unsigned long)g.passedChecksum(),
        (unsigned long)g.failedChecksum());
-  line(TFT_ORANGE, "Log %lus %s sleep:%s", (unsigned long)cfg.logIntervalSec,
+  String mode = cfg.logMode == LOG_MODE_TIME ? String(cfg.logIntervalSec) + "s"
+                : cfg.logMode == LOG_MODE_DISTANCE ? String(cfg.logDistanceM) + "m" : String("smart");
+  line(TFT_ORANGE, "Log %s%s %s sleep:%s", mode.c_str(), cfg.autoPause ? "+pause" : "",
        LOG_FORMAT_NAMES[cfg.logFormat], canDeepSleep() ? "on" : cfg.deepSleep ? "n/a" : "off");
   const char* name = strrchr(rtc.baseName, '/');
   line(TFT_MAGENTA, "File %s (%lu)", name ? name + 1 : "-", (unsigned long)rtc.points);
@@ -580,7 +664,7 @@ static void drawWifiPage() {
   canvas.setTextColor(up ? TFT_CYAN : COL_NOFIX);
   canvas.drawString(up ? nmeaserver::ipText() : String("--"), 30, 70);
 
-  drawLabeled(97, "Port", String(cfg.nmeaPort) + "  (TCP + UDP)", TFT_YELLOW);
+  drawLabeled(97, "Port", String(cfg.nmeaPort) + " (TCP+UDP)  web 80", TFT_YELLOW);
 
   int tcp = nmeaserver::tcpClients();
   String devices = "TCP " + String(tcp);
@@ -652,16 +736,19 @@ static void drawSignalPage() {
 // ---------------------------------------------------------------- settings
 
 enum SettingId {
-  S_INTERVAL, S_FORMAT, S_NMEA, S_SLEEP, S_SCREEN, S_FIXTO, S_MODULE, S_RX, S_TX, S_BAUD,
+  S_LOGMODE, S_INTERVAL, S_DISTANCE, S_AUTOPAUSE, S_FORMAT, S_NMEA, S_SLEEP, S_SCREEN, S_FIXTO,
+  S_MODULE, S_RX, S_TX, S_BAUD,
   S_SERVER, S_WIFIMODE, S_PORT, S_SSID, S_PASS, S_APSSID, S_APPASS,
   S_TZ, S_AUTOSTART, S_BRIGHT, S_COUNT
 };
 static const char* const SETTING_NAMES[S_COUNT] = {
-  "Log interval", "Log format", "NMEA log", "Deep sleep", "Screen timeout", "Fix timeout", "GPS module",
+  "Log mode", "Log interval", "Log distance", "Auto pause", "Log format", "NMEA log", "Deep sleep",
+  "Screen timeout", "Fix timeout", "GPS module",
   "GPS RX pin", "GPS TX pin", "GPS baud", "NMEA server", "WiFi mode", "NMEA port",
   "WiFi SSID", "WiFi password", "AP name", "AP password", "Time zone", "Auto start", "Brightness",
 };
 static const uint32_t INTERVALS[] = {1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600};
+static const uint32_t DISTANCES[] = {5, 10, 20, 50, 100, 200, 500, 1000};
 static const uint32_t SCREEN_TOS[] = {0, 15, 30, 60, 120, 300};
 static const uint32_t FIX_TOS[] = {15, 30, 60, 90, 120, 180, 300};
 static const uint32_t BAUDS[] = {0, 4800, 9600, 19200, 38400, 57600, 115200, 230400};
@@ -696,12 +783,16 @@ static String secondsText(uint32_t s) {
 
 static String settingValue(int id) {
   switch (id) {
+    case S_LOGMODE: return LOG_MODE_NAMES[cfg.logMode];
     case S_INTERVAL: return secondsText(cfg.logIntervalSec);
+    case S_DISTANCE: return String(cfg.logDistanceM) + " m";
+    case S_AUTOPAUSE: return cfg.autoPause ? "on" : "off";
     case S_FORMAT: return LOG_FORMAT_NAMES[cfg.logFormat];
     case S_NMEA: return cfg.logNmea ? "on" : "off";
     case S_SLEEP:
       if (!cfg.deepSleep) return "off";
       if (cfg.nmeaServer) return "on (WiFi on)";
+      if (cfg.logMode != LOG_MODE_TIME) return "on (time mode)";
       return cfg.logIntervalSec >= MIN_SLEEP_INTERVAL_SEC ? "on" : "on (int<15s)";
     case S_SCREEN: return secondsText(cfg.screenTimeoutSec);
     case S_FIXTO: return secondsText(cfg.fixTimeoutSec);
@@ -784,7 +875,10 @@ static void handleEditKey(const std::vector<char>& word, bool enter, bool del) {
 
 static void changeSetting(int id, int dir) {
   switch (id) {
+    case S_LOGMODE: cfg.logMode = (cfg.logMode + LOG_MODE_COUNT + dir) % LOG_MODE_COUNT; break;
     case S_INTERVAL: cfg.logIntervalSec = cycle(INTERVALS, cfg.logIntervalSec, dir); break;
+    case S_DISTANCE: cfg.logDistanceM = cycle(DISTANCES, cfg.logDistanceM, dir); break;
+    case S_AUTOPAUSE: cfg.autoPause = !cfg.autoPause; break;
     case S_FORMAT: cfg.logFormat = (cfg.logFormat + LOG_FORMAT_COUNT + dir) % LOG_FORMAT_COUNT; break;
     case S_NMEA: cfg.logNmea = !cfg.logNmea; break;
     case S_SLEEP: cfg.deepSleep = !cfg.deepSleep; break;
@@ -992,12 +1086,6 @@ static uint16_t trackTypeColor(uint8_t type) {
   return type == tracks::TYPE_CSV ? TFT_CYAN : type == tracks::TYPE_GPX ? TFT_YELLOW : TFT_MAGENTA;
 }
 
-static String sizeText(uint32_t bytes) {
-  if (bytes < 1024) return String(bytes) + " B";
-  if (bytes < 1024 * 1024) return String(bytes / 1024.0f, 1) + " KB";
-  return String(bytes / (1024.0f * 1024), 1) + " MB";
-}
-
 // Local date and time, with the configured UTC offset.
 static String dateTimeText(time_t utc) {
   if (!utc) return "--";
@@ -1066,7 +1154,7 @@ static void drawTracksPage() {
     canvas.drawString(tracks::TYPE_NAMES[f.type], 130, y);
     canvas.setTextColor(sel ? TFT_WHITE : COL_LABEL);
     canvas.setTextDatum(top_right);
-    canvas.drawString(sizeText(f.size), 236, y);
+    canvas.drawString(tracks::sizeText(f.size), 236, y);
     canvas.setTextDatum(top_left);
   }
   if (trackAction >= 0) drawTrackActions();
@@ -1205,6 +1293,54 @@ static void saveScreenshot() {
   f.close();
   if (ok) nextNum++;
   showStatus(ok ? (String("Saved ") + (strrchr(path, '/') + 1)).c_str() : "SD write error!");
+}
+
+// Current GPS data as table rows for the web page.
+static String webStatusHtml() {
+  TinyGPSPlus& g = gps.gps();
+  bool fix = gps.hasFix();
+  String s;
+  char buf[64];
+  auto row = [&](const char* label, const char* value) {
+    s += "<tr><td>";
+    s += label;
+    s += "</td><td>";
+    s += value;
+    s += "</td></tr>";
+  };
+  bool gpsAlive = gps.lastDataMs() && millis() - gps.lastDataMs() < 5000;
+  row("Status", !gpsAlive ? "no GPS data" : fix ? "fix" : "no fix");
+  if (fix) {
+    double lat = g.location.lat(), lon = g.location.lng();
+    snprintf(buf, sizeof(buf), "%.6f %c", fabs(lat), lat >= 0 ? 'N' : 'S');
+    row("Latitude", buf);
+    snprintf(buf, sizeof(buf), "%.6f %c", fabs(lon), lon >= 0 ? 'E' : 'W');
+    row("Longitude", buf);
+    if (g.altitude.isValid()) snprintf(buf, sizeof(buf), "%.0f m", g.altitude.meters());
+    else strcpy(buf, "--");
+    row("Altitude", buf);
+    snprintf(buf, sizeof(buf), "%.1f km/h, course %.0f&deg;", g.speed.kmph(), g.course.deg());
+    row("Speed", buf);
+  }
+  char acc[12] = "";
+  if (fix && g.hdop.isValid()) snprintf(acc, sizeof(acc), " (~%.0f m)", g.hdop.hdop() * HDOP_UERE_M);
+  snprintf(buf, sizeof(buf), "%lu used / %d in view, HDOP %.1f%s", (unsigned long)g.satellites.value(),
+           gps.satsInView(), g.hdop.hdop(), acc);
+  row("Satellites", buf);
+  struct tm t;
+  if (localTime(t)) {
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d UTC%s", t.tm_year + 1900, t.tm_mon + 1,
+             t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, tzText(cfg.tzOffsetMin).c_str());
+    row("Time", buf);
+  }
+  const char* name = strrchr(rtc.baseName, '/');
+  if (rtc.logging) snprintf(buf, sizeof(buf), "recording, %lu points %s", (unsigned long)rtc.points, name ? name + 1 : "");
+  else strcpy(buf, "off");
+  row("Logging", buf);
+  int mv = batteryMvUi();
+  snprintf(buf, sizeof(buf), "%.2f V, %d %%", mv / 1000.0f, batteryPctFromMv(mv));
+  row("Battery", buf);
+  return s;
 }
 
 // ---------------------------------------------------------------- screen / input
@@ -1463,6 +1599,7 @@ void setup() {
   }
   M5.Display.setBrightness(cfg.brightness);
   startGps();
+  web::setStatusHtml(webStatusHtml);
   if (cfg.nmeaServer && !wifiConfigured()) {
     cfg.nmeaServer = false;
     showStatus("WiFi incomplete: server off", 4000);
@@ -1490,11 +1627,14 @@ void loop() {
   }
 
   uint32_t now = millis();
-  if (rtc.logging && sdOk && (lastLogMs == 0 || now - lastLogMs >= cfg.logIntervalSec * 1000UL)) {
+  bool due = cfg.logMode != LOG_MODE_TIME || lastLogMs == 0 || now - lastLogMs >= cfg.logIntervalSec * 1000UL;
+  if (rtc.logging && sdOk && due) {
     LogResult result = logPoint(batteryPctFromMv(batteryMvUi()));
     if (result == LOG_OK) {
       lastLogMs = now;
       sdErrors = 0;
+    } else if (result == LOG_PAUSED) {
+      lastLogMs = now;
     } else if (result == LOG_SD_ERROR && ++sdErrors >= MAX_SD_ERRORS) {
       // Card removed or broken: stop, so the screen timeout works again
       sdOk = false;

@@ -35,6 +35,7 @@ struct Track {
 };
 
 std::vector<FileInfo> list();  // newest first
+String sizeText(uint32_t bytes);  // "512 B", "12.3 KB", "1.2 MB"
 String path(const FileInfo& f);
 bool remove(const FileInfo& f);
 bool load(const FileInfo& f, Track& t);  // false if not readable or no points

@@ -30,6 +30,12 @@ std::vector<FileInfo> list() {
   return files;
 }
 
+String sizeText(uint32_t bytes) {
+  if (bytes < 1024) return String(bytes) + " B";
+  if (bytes < 1024 * 1024) return String(bytes / 1024.0f, 1) + " KB";
+  return String(bytes / (1024.0f * 1024), 1) + " MB";
+}
+
 String path(const FileInfo& f) { return String(LOG_DIR "/") + f.name; }
 
 bool remove(const FileInfo& f) { return SD.remove(path(f)); }

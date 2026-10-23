@@ -11,6 +11,7 @@ const GpsPreset GPS_PRESETS[GPS_MODULE_COUNT] = {
 };
 
 const char* const LOG_FORMAT_NAMES[LOG_FORMAT_COUNT] = {"CSV", "GPX", "CSV+GPX"};
+const char* const LOG_MODE_NAMES[LOG_MODE_COUNT] = {"Smart", "Time", "Distance"};
 
 // Written first and renamed to CONFIG_PATH, so a power loss while saving
 // doesn't leave a truncated config.
@@ -66,7 +67,12 @@ bool configLoad(Config& cfg) {
     } else if (key == "gps_rx") cfg.gpsRx = constrain(n, -1, 48);
     else if (key == "gps_tx") cfg.gpsTx = constrain(n, -1, 48);
     else if (key == "gps_baud") cfg.gpsBaud = (val == "auto") ? 0 : n;
-    else if (key == "log_interval") cfg.logIntervalSec = constrain(n, 1, 86400);
+    else if (key == "log_mode") {
+      for (uint8_t i = 0; i < LOG_MODE_COUNT; i++)
+        if (val.equalsIgnoreCase(LOG_MODE_NAMES[i])) cfg.logMode = i;
+    } else if (key == "log_interval") cfg.logIntervalSec = constrain(n, 1, 86400);
+    else if (key == "log_distance") cfg.logDistanceM = constrain(n, 1, 10000);
+    else if (key == "auto_pause") cfg.autoPause = n != 0;
     else if (key == "log_format") {
       for (uint8_t i = 0; i < LOG_FORMAT_COUNT; i++)
         if (val.equalsIgnoreCase(LOG_FORMAT_NAMES[i])) cfg.logFormat = i;
@@ -98,13 +104,19 @@ bool configSave(const Config& cfg) {
   f.printf("gps_tx=%d\n", cfg.gpsTx);
   if (cfg.gpsBaud == 0) f.println("gps_baud=auto");
   else f.printf("gps_baud=%lu\n", (unsigned long)cfg.gpsBaud);
-  f.println("# seconds between two logged points");
+  f.println("# smart = at turns and speed changes, time = every log_interval, distance = every log_distance");
+  f.printf("log_mode=%s\n", LOG_MODE_NAMES[cfg.logMode]);
+  f.println("# seconds between two logged points (time mode)");
   f.printf("log_interval=%lu\n", (unsigned long)cfg.logIntervalSec);
+  f.println("# meters between two logged points (distance mode)");
+  f.printf("log_distance=%u\n", cfg.logDistanceM);
+  f.println("# 1 = no points while standing still");
+  f.printf("auto_pause=%d\n", cfg.autoPause ? 1 : 0);
   f.println("# CSV | GPX | CSV+GPX");
   f.printf("log_format=%s\n", LOG_FORMAT_NAMES[cfg.logFormat]);
   f.println("# 1 = also write all NMEA sentences from the GPS to a .nmea file");
   f.printf("nmea_log=%d\n", cfg.logNmea ? 1 : 0);
-  f.println("# 1 = deep sleep between points while logging (interval >= 15s)");
+  f.println("# 1 = deep sleep between points while logging (time mode, interval >= 15s)");
   f.printf("deep_sleep=%d\n", cfg.deepSleep ? 1 : 0);
   f.println("# seconds without key press until screen off / deep sleep, 0 = never");
   f.printf("screen_timeout=%u\n", cfg.screenTimeoutSec);

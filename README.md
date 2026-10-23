@@ -14,6 +14,7 @@ Cardputer v1.x).
 
 - NMEA server over WiFi (TCP + UDP) for chart apps like Garmin Boating, either with its
   own WiFi network or in an existing one
+- Web page while WiFi is on: live GPS data and all track files for download, in any browser
 - Large display: latitude, longitude, altitude, local time, satellites (used / in view)
 - Status bar: recording state + point count, satellite reception (FIX / NO FIX, used / in
   view), NMEA server (`↑ NMEA`), missing SD card, battery level (percentage left out if the
@@ -35,8 +36,11 @@ Cardputer v1.x).
   The GPX file is closed after every point, so it stays valid if power is lost.
 - Optional raw NMEA log (`.nmea` next to the track): all sentences from the GPS,
   buffered in RAM and written in 4 KB chunks (up to 4 KB are lost on power loss)
-- Configurable log interval (1 s … 1 h), format, time zone, brightness, timeouts
-- Deep sleep between points while logging (interval >= 15 s)
+- Log modes like Garmin: smart (at turns and speed changes), by time (1 s … 1 h) or by
+  distance (5 m … 1 km); auto pause while standing still; inaccurate fixes are never
+  recorded. See [Log modes](#log-modes)
+- Configurable format, time zone, brightness, timeouts
+- Deep sleep between points while logging (time mode, interval >= 15 s)
 - GPS module presets plus custom RX/TX pins and baud rate, or automatic baud detection
 - Keyboard control when a keyboard is detected (matrix keyboard on v1.x, TCA8418 on ADV);
   without keyboard the G0 button still works
@@ -139,7 +143,10 @@ gps_module=cap_lora1262   # cap_lora1262 | unit_gps_v11 | unit_gps_at6558 | grov
 gps_rx=15
 gps_tx=13
 gps_baud=115200           # or auto
-log_interval=5            # seconds
+log_mode=Smart            # Smart | Time | Distance
+log_interval=5            # seconds (time mode)
+log_distance=10           # meters (distance mode)
+auto_pause=1              # 1 = no points while standing still
 log_format=CSV+GPX        # CSV | GPX | CSV+GPX
 nmea_log=0                # 1 = also log raw NMEA to .nmea
 deep_sleep=0
@@ -186,6 +193,16 @@ The WiFi page (after the signal page) shows network name, AP password or connect
 status, address, port and connected devices. Deep sleep is disabled while the server is
 on, and WiFi increases the power consumption considerably.
 
+### Web page: GPS data and track download
+
+While the NMEA server runs, the Cardputer also serves a web page on port 80: open
+`http://192.168.4.1/` (own network) or `http://<address from the WiFi page>/` in any
+browser. It shows the current GPS data (refreshed every 2 s) and lists all track files
+with type and size; tap a file to download it. Logging goes on meanwhile, but while a
+large file is sent, the display and the NMEA output pause for a moment.
+
+Like the NMEA sentences, the page is open to every device in the network.
+
 ### Testing from a computer
 
 Join the same WiFi as the Cardputer, then:
@@ -201,9 +218,24 @@ socat -u UDP-RECV:2000 -
 Don't use `nc -ul 2000` for UDP: macOS netcat ties its socket to the first sender and its
 own address, so it drops the following broadcast packets after a few lines.
 
+## Log modes
+
+GPS positions jitter by a few meters even when the device doesn't move. Recording all of
+them makes a track zig-zag around a stop and adds up distance that was never travelled.
+So points are filtered before they are written:
+
+* **Accuracy**: a fix with HDOP above 5 (roughly 25 m) is never recorded.
+* **Smart** (default): a point at turns (course change >= 20°) and speed changes
+  (>= 5 km/h and >= 25 %), and at least every 60 s or 200 m. Moves smaller than
+  5 m or the fix accuracy (HDOP x 5 m) are ignored as noise.
+* **Time**: a point every `log_interval` seconds.
+* **Distance**: a point every `log_distance` meters.
+* **Auto pause** (default on, all modes): after 10 s below 1.5 km/h recording pauses
+  (status bar shows `PAUSE`) and resumes above 3 km/h or after moving more than 20 m.
+
 ## Deep sleep
 
-With `deep_sleep=1`, logging active and an interval of at least 15 s, the device goes
+With `deep_sleep=1`, logging active in time mode and an interval of at least 15 s, the device goes
 to deep sleep after `screen_timeout` seconds without input. It then wakes up by timer for
 each point, reads the GPS (display stays off), writes the point and sleeps again. If no fix
 is found within `fix_timeout` seconds, that point is skipped. Press **G0** to get the UI back.
@@ -221,4 +253,4 @@ From fully loaded battery to the last entry written in the log files:
 | log interval | logs     | deep sleep | duration |
 | ------------ | -------- | ---------- | -------- |
 |  5 sec       | csv, gpx | off        | 6h 15min |
-| 30 sec       | csv, gpx | off        |          |
+| 30 sec       | csv, gpx | off        | 7h 25min |

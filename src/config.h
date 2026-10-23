@@ -25,12 +25,20 @@ extern const GpsPreset GPS_PRESETS[GPS_MODULE_COUNT];
 enum LogFormat : uint8_t { LOG_CSV = 0, LOG_GPX, LOG_CSV_GPX, LOG_FORMAT_COUNT };
 extern const char* const LOG_FORMAT_NAMES[LOG_FORMAT_COUNT];
 
+// When a point is recorded: at turns and speed changes (smart), every
+// log_interval seconds (time) or every log_distance meters (distance).
+enum LogMode : uint8_t { LOG_MODE_SMART = 0, LOG_MODE_TIME, LOG_MODE_DISTANCE, LOG_MODE_COUNT };
+extern const char* const LOG_MODE_NAMES[LOG_MODE_COUNT];
+
 struct Config {
   uint8_t gpsModule = GPS_UNIT_V11;
   int8_t gpsRx = 1;
   int8_t gpsTx = 2;
   uint32_t gpsBaud = 115200;      // 0 = auto
-  uint32_t logIntervalSec = 5;
+  uint8_t logMode = LOG_MODE_SMART;
+  uint32_t logIntervalSec = 5;    // time mode
+  uint16_t logDistanceM = 10;     // distance mode
+  bool autoPause = true;          // no points while standing still
   uint8_t logFormat = LOG_CSV_GPX;
   bool logNmea = false;            // raw NMEA sentences to .nmea
   bool deepSleep = false;

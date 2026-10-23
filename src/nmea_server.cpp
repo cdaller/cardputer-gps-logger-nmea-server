@@ -1,4 +1,5 @@
 #include "nmea_server.h"
+#include "web.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <lwip/sockets.h>
@@ -40,6 +41,7 @@ void begin(const Config& cfg) {
   }
   server.begin(port);
   server.setNoDelay(true);
+  web::begin();
   lineLen = 0;
   tcpLen = 0;
   isRunning = true;
@@ -53,6 +55,7 @@ void end() {
     blockedSince[i] = 0;
   }
   server.end();
+  web::end();
   udp.stop();
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
@@ -99,6 +102,7 @@ static bool checkAlive(WiFiClient& c) {
 
 void update() {
   if (!isRunning) return;
+  web::update();
   for (int i = 0; i < MAX_CLIENTS; i++) {
     if (alive[i] && !checkAlive(clients[i])) drop(i);
   }
