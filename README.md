@@ -40,6 +40,8 @@ Cardputer v1.x).
   speed, switched with `C`
 - Current track page: info or map (up / down or `I` / `M`) of the track being recorded, like on the
   tracks page, updated every 5 s
+- Maps can be zoomed (`=` / `-`) and panned (arrow keys while zoomed in); the zoomed current
+  track map follows the latest position until it is panned
 - Logging to `/gpslogger/tracks/YYYYMMDD_HHMMSS.csv` / `.gpx` (UTC time stamps).
   The GPX file is closed after every point, so it stays valid if power is lost.
 - Optional raw NMEA log (`.nmea` next to the track): all sentences from the GPS,
@@ -136,6 +138,9 @@ to the `creator` attribute of GPX files.
 | `;` `.` (up / down) | previous / next sub page of the main page |
 | `1` ... `6`        | jump to main page, showing its sub page selected last |
 | `I` / `M` / `C`    | current track and track pages: info / map / colors by altitude or speed |
+| `=` / `-`          | map: zoom in / out (x1 ... x64); zoomed in, the arrow keys pan the map |
+| `` ` `` (Esc)      | zoomed map: back to the whole track (arrow keys switch pages again) |
+| `F`                | zoomed current track map: follow the latest position again after panning |
 | `C` / `X`          | acceleration pages: calibrate (standing still) / reset max values |
 | `;` `.` + `Enter`  | menu page: select item (up/down arrow keys) and run it |
 | `S`                | settings (`;` `.` select, `,` `/` change, `` ` `` / `Del` save & exit) |
