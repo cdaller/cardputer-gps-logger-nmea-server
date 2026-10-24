@@ -1262,24 +1262,50 @@ static void drawSettingsPage() {
   canvas.drawString(value, 7, large ? boxY + 20 : boxY + 25);
 }
 
+// Key, what it does; scrolled with up / down, 5 rows at a time.
+static const char* const HELP[][2] = {
+  {"Enter  R", "start / stop logging"},
+  {",  /  Tab", "main page"},
+  {";  .", "sub page"},
+  {"1 - 6", "main page"},
+  {"G0 click", "next page"},
+  {"G0 hold", "start / stop logging"},
+  {"G0", "wakes from sleep"},
+  {"S", "settings"},
+  {"T", "tracks"},
+  {"H", "help"},
+  {"Z", "screen off / sleep"},
+  {"P", "screenshot"},
+  {"I  M", "track info / map"},
+  {"C", "colors, calibrate"},
+  {"=  -", "map zoom in / out"},
+  {"[  ]", "time cursor"},
+  {"{  }", "cursor 10 %"},
+  {"F", "map follows you"},
+  {"X", "reset max accel."},
+  {"`  Esc", "back, reset zoom"},
+};
+static const int HELP_COUNT = sizeof(HELP) / sizeof(HELP[0]);
+static const int HELP_ROWS = 5;
+static int helpFirst = 0;  // first row shown
+
+static void drawTitleBar(const String& title, const char* keys);
+
 static void drawHelpPage() {
-  canvas.setFont(&fonts::Font2);
-  canvas.setTextColor(TFT_YELLOW);
-  canvas.drawString("KEYS", 3, 20);
-  canvas.setTextColor(COL_LABEL);
-  canvas.setTextDatum(top_right);
-  canvas.drawString("GPS Logger v" FW_VERSION, 237, 20);
-  canvas.setTextDatum(top_left);
-  const char* lines[] = {
-    "Enter/R  start / stop logging",
-    ",/ Tab 1-6 page  ;. sub page",
-    "S settings  T tracks  H help",
-    "Z  screen off/sleep   P  screenshot",
-    "G0 click: next (sub) page  hold: rec",
-    "G0 wakes from deep sleep",
-  };
-  canvas.setTextColor(TFT_WHITE);
-  for (int i = 0; i < 6; i++) canvas.drawString(lines[i], 3, 38 + i * 16);
+  drawTitleBar("HELP  v" FW_VERSION, ";. scroll  other: back");
+  const int top = 21, rowH = 22;
+  canvas.setFont(&fonts::FreeSans9pt7b);
+  for (int i = 0; i < HELP_ROWS && helpFirst + i < HELP_COUNT; i++) {
+    int y = top + i * rowH;
+    canvas.setTextColor(TFT_YELLOW);
+    canvas.drawString(HELP[helpFirst + i][0], 3, y);
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawString(HELP[helpFirst + i][1], 74, y);
+  }
+  // Scroll bar: the visible part of the list
+  const int x = 237, w = 3, h = 134 - top;
+  canvas.fillRect(x, top, w, h, COL_BAR);
+  canvas.fillRect(x, top + h * helpFirst / HELP_COUNT, w, h * HELP_ROWS / HELP_COUNT, TFT_WHITE);
 }
 
 // ---------------------------------------------------------------- menu
@@ -1469,7 +1495,66 @@ static int drawTrackValue(int x, int y, const char* label, const String& value, 
   return x + canvas.textWidth(value);
 }
 
-static void drawTrackInfo(const tracks::Track& t) {
+// Map zoom and pan. At zoom 1 the whole track is shown and the arrow keys
+// switch pages; zoomed in they pan. The current track's map follows the
+// latest point until it is panned.
+// Time cursor ([ ]) on the altitude profile and the map, kept as a time so it
+// stays on its point when the current track grows or gets thinned out.
+static const int MAP_X = 4, MAP_Y = 21, MAP_W = 232, MAP_H = 95;
+static const uint8_t MAP_MAX_ZOOM = 64;
+static const int PROFILE_X = 3, PROFILE_W = 234;
+struct MapView {
+  uint8_t zoom;
+  bool follow;     // current track: centered on the latest point
+  float lat, lon;  // center while zoomed
+  bool cursor;
+  time_t cursorTime;
+};
+static MapView trackView = {1, false, 0, 0, false, 0};
+static MapView liveView = {1, true, 0, 0, false, 0};
+
+// Point nearest to the cursor time; the points are in time order.
+static int cursorIndex(const tracks::Track& t, time_t time) {
+  int lo = 0, hi = t.n - 1;
+  while (lo < hi) {
+    int mid = (lo + hi) / 2;
+    if (t.pts[mid].time < time) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo > 0 && time - t.pts[lo - 1].time <= t.pts[lo].time - time) lo--;
+  return lo;
+}
+
+// [ ] move the cursor by one profile pixel, { } (shift) by a tenth of the
+// track; the first key puts it at the end ([) or the start (]). Esc hides it.
+// A zoomed map is centered on the cursor.
+static bool cursorKey(MapView& v, const tracks::Track& t, char c) {
+  if (c == '`' && v.cursor) {
+    v.cursor = false;
+    return true;
+  }
+  int dir = c == '[' || c == '{' ? -1 : c == ']' || c == '}' ? 1 : 0;
+  if (!dir || !t.n) return false;
+  int step = c == '{' || c == '}' ? max(1, t.n / 10) : max(1, (t.n + PROFILE_W - 1) / PROFILE_W);
+  int i = !v.cursor ? (dir < 0 ? t.n - 1 : 0) : constrain(cursorIndex(t, v.cursorTime) + dir * step, 0, t.n - 1);
+  v.cursor = true;
+  v.cursorTime = t.pts[i].time;
+  if (v.zoom > 1) {
+    v.follow = false;
+    v.lat = t.pts[i].lat;
+    v.lon = t.pts[i].lon;
+  }
+  return true;
+}
+
+// "14:23:05  432 m  57 km/h" of the point at the cursor.
+static String cursorText(const tracks::Track& t, const MapView& v) {
+  const tracks::Point& p = t.pts[cursorIndex(t, v.cursorTime)];
+  String time = p.time ? dateTimeText(p.time).substring(11) : String("--:--:--");
+  return time + "  " + String(p.alt, 0) + " m  " + String(p.speed, 0) + " km/h";
+}
+
+static void drawTrackInfo(const tracks::Track& t, const MapView& v) {
   String duration = "--";
   if (t.start && t.end >= t.start) {
     uint32_t s = t.end - t.start;
@@ -1504,35 +1589,29 @@ static void drawTrackInfo(const tracks::Track& t) {
     if (t.end) when += " - " + dateTimeText(t.end).substring(11, 16);
   }
   canvas.setFont(&fonts::Font2);
-  canvas.setTextColor(TFT_WHITE);
-  canvas.drawString(when, 3, 73);
-  canvas.setTextColor(COL_LABEL);
-  canvas.setTextDatum(top_right);
-  canvas.drawString(String(t.count) + " pts", 237, 73);
-  canvas.setTextDatum(top_left);
+  if (v.cursor) {  // instead of start / end: the point at the cursor
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawString(cursorText(t, v), 3, 73);
+  } else {
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawString(when, 3, 73);
+    canvas.setTextColor(COL_LABEL);
+    canvas.setTextDatum(top_right);
+    canvas.drawString(String(t.count) + " pts", 237, 73);
+    canvas.setTextDatum(top_left);
+  }
 
   // Altitude profile over the points, colored like the map
-  const int x0 = 3, w = 234, bottom = 133, h = 40;
+  const int x0 = PROFILE_X, w = PROFILE_W, bottom = 133, h = 40;
   canvas.drawFastHLine(x0, bottom, w, COL_BAR);
   for (int i = 0; i < w; i++) {
     const tracks::Point& p = t.pts[i * t.n / w];
     int hh = 1 + altFraction(t, p.alt) * (h - 1);
     canvas.drawFastVLine(x0 + i, bottom - hh, hh, pointColor(t, p));
   }
+  if (v.cursor) canvas.drawFastVLine(x0 + cursorIndex(t, v.cursorTime) * w / t.n, bottom - h - 2, h + 2, TFT_WHITE);
 }
 
-// Map zoom and pan. At zoom 1 the whole track is shown and the arrow keys
-// switch pages; zoomed in they pan. The current track's map follows the
-// latest point until it is panned.
-static const int MAP_X = 4, MAP_Y = 21, MAP_W = 232, MAP_H = 95;
-static const uint8_t MAP_MAX_ZOOM = 64;
-struct MapView {
-  uint8_t zoom;
-  bool follow;     // current track: centered on the latest point
-  float lat, lon;  // center while zoomed
-};
-static MapView trackView = {1, false, 0, 0};
-static MapView liveView = {1, true, 0, 0};
 
 // Pixels per degree latitude that fit the whole track, 0 for a single position.
 static float mapFitScale(const tracks::Track& t, float& cosLat) {
@@ -1604,10 +1683,26 @@ static void drawTrackMap(const tracks::Track& t, const MapView& v, const tracks:
   const tracks::Point &first = t.pts[0], &last = latest ? *latest : t.pts[t.n - 1];
   canvas.fillCircle(px(first), py(first), 3, TFT_GREEN);
   canvas.drawCircle(px(last), py(last), 3, TFT_RED);
+  if (v.cursor) {
+    const tracks::Point& c = t.pts[cursorIndex(t, v.cursorTime)];
+    canvas.drawCircle(px(c), py(c), 5, TFT_WHITE);
+    canvas.fillCircle(px(c), py(c), 2, TFT_WHITE);
+  }
   canvas.clearClipRect();
 
-  // Color legend: low - high
   canvas.setFont(&fonts::Font2);
+  if (v.cursor) {  // the point at the cursor instead of the color legend, zoom only if zoomed
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawString(cursorText(t, v), 3, 119);
+    if (v.zoom > 1) {
+      canvas.setTextDatum(top_right);
+      canvas.drawString("x" + String(v.zoom), 236, 119);
+      canvas.setTextDatum(top_left);
+    }
+    return;
+  }
+
+  // Color legend: low - high
   String low = cfg.mapSpeed ? String("0") : String(t.altMin, 0);
   String high = cfg.mapSpeed ? String(t.spdMax, 0) + " km/h" : String(t.altMax, 0) + " m";
   canvas.setTextColor(rangeColor(0));
@@ -1632,7 +1727,7 @@ static void drawTrackMap(const tracks::Track& t, const MapView& v, const tracks:
 
 static void drawTrackInfoPage() {
   drawTitleBar(trackFiles[trackSel].name, "C color M map");
-  drawTrackInfo(track);
+  drawTrackInfo(track, trackView);
 }
 
 static void drawTrackMapPage() {
@@ -1649,7 +1744,7 @@ static void updateLiveTrack() {
     liveState = {};
     strlcpy(liveBase, rtc.baseName, sizeof(liveBase));
     livePoints = 0;
-    liveView = {1, true, 0, 0};
+    liveView = {1, true, 0, 0, false, 0};
   }
   if (rtc.points == livePoints || (livePoints && millis() - liveReadMs < LIVE_READ_MS)) return;
   bool gpx = cfg.logFormat == LOG_GPX;
@@ -1667,7 +1762,7 @@ static void drawLivePage(bool map) {
   if (!rtc.logging) canvas.drawString("Not logging - Enter starts", 3, 22);
   else if (!liveTrack.count || strcmp(liveBase, rtc.baseName) != 0) canvas.drawString("No points yet", 3, 22);
   else if (map) drawTrackMap(liveTrack, liveView, &liveState.prev);
-  else drawTrackInfo(liveTrack);
+  else drawTrackInfo(liveTrack, liveView);
 }
 
 static void drawSubPageBar();
@@ -1685,6 +1780,8 @@ static void draw() {
     drawTrackMapPage();
   } else if (page == PAGE_LIVE_INFO || page == PAGE_LIVE_MAP) {
     drawLivePage(page == PAGE_LIVE_MAP);
+  } else if (page == PAGE_HELP) {
+    drawHelpPage();
   } else {
     drawStatusBar();
     if (page == PAGE_MAIN) drawMainPage();
@@ -1696,7 +1793,6 @@ static void draw() {
     else if (page == PAGE_ACCEL) drawAccelChartPage();
     else if (page == PAGE_WIFI) drawWifiPage();
     else if (page == PAGE_MENU) drawMenuPage();
-    else drawHelpPage();
   }
   drawSubPageBar();
   if (millis() < statusMsgUntil) drawMessageBox(statusMsg);
@@ -1898,6 +1994,7 @@ static void saveImuCalibration() {
 }
 
 static void openHelp() {
+  helpFirst = 0;
   returnPage = page;
   page = PAGE_HELP;
 }
@@ -1921,7 +2018,7 @@ static void openTrack(Page p) {
     showStatus("Reading track...", 60000);
     draw();
     bool ok = tracks::load(f, track);
-    trackView = {1, false, 0, 0};
+    trackView = {1, false, 0, 0, false, 0};
     statusMsgUntil = 0;
     if (!ok) { showStatus("No track points found"); return; }
   }
@@ -1975,7 +2072,9 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     return;
   }
   if (page == PAGE_HELP) {
-    page = returnPage;
+    if (c == ';') helpFirst = max(0, helpFirst - 1);
+    else if (c == '.') helpFirst = min(HELP_COUNT - HELP_ROWS, helpFirst + 1);
+    else page = returnPage;
     return;
   }
   if (page == PAGE_TRACKS) {
@@ -1999,6 +2098,7 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     else if (c == '`' || del) page = returnPage;
     return;
   }
+  if ((page == PAGE_TRACK_INFO || page == PAGE_TRACK_MAP) && cursorKey(trackView, track, c)) return;
   if (page == PAGE_TRACK_MAP && mapKey(trackView, track, nullptr, c)) return;
   if (page == PAGE_TRACK_INFO || page == PAGE_TRACK_MAP) {
     if (c == 'c') toggleMapColor();
@@ -2025,6 +2125,8 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     }
     if (c == 'x') { motion::resetMax(); showStatus("Max values reset"); return; }
   }
+  bool livePage = page == PAGE_LIVE_INFO || page == PAGE_LIVE_MAP;
+  if (livePage && liveTrack.count && cursorKey(liveView, liveTrack, c)) return;
   if (page == PAGE_LIVE_MAP && liveTrack.count && mapKey(liveView, liveTrack, &liveState.prev, c)) return;
   if (page == PAGE_LIVE_INFO || page == PAGE_LIVE_MAP) {
     if (c == 'c') { toggleMapColor(); return; }

@@ -42,6 +42,8 @@ Cardputer v1.x).
   tracks page, updated every 5 s
 - Maps can be zoomed (`=` / `-`) and panned (arrow keys while zoomed in); the zoomed current
   track map follows the latest position until it is panned
+- Time cursor (`[` / `]`) on the altitude profile and the map: shows time, altitude and speed
+  of the point; a zoomed map is centered on it
 - Logging to `/gpslogger/tracks/YYYYMMDD_HHMMSS.csv` / `.gpx` (UTC time stamps).
   The GPX file is closed after every point, so it stays valid if power is lost.
 - Optional raw NMEA log (`.nmea` next to the track): all sentences from the GPS,
@@ -141,6 +143,7 @@ to the `creator` attribute of GPX files.
 | `=` / `-`          | map: zoom in / out (x1 ... x64); zoomed in, the arrow keys pan the map |
 | `` ` `` (Esc)      | zoomed map: back to the whole track (arrow keys switch pages again) |
 | `F`                | zoomed current track map: follow the latest position again after panning |
+| `[` / `]`          | track info and map: time cursor back / forward (first press: `[` at the end, `]` at the start); `{` / `}` (Shift) jump 10 % of the track; `` ` `` hides it |
 | `C` / `X`          | acceleration pages: calibrate (standing still) / reset max values |
 | `;` `.` + `Enter`  | menu page: select item (up/down arrow keys) and run it |
 | `S`                | settings (`;` `.` select, `,` `/` change, `` ` `` / `Del` save & exit) |

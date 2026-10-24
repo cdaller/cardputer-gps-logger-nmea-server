@@ -145,6 +145,7 @@ bool loadMore(const FileInfo& f, Track& t, LoadState& st) {
       t.distM += d;
       if (f.type == TYPE_GPX && time > st.prevTime && st.prevTime) p.speed = d / (time - st.prevTime) * 3.6;
     }
+    p.time = time;
     st.prev = p;
     st.prevTime = time;
     st.pos = at;

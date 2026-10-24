@@ -23,6 +23,7 @@ static const int MAX_POINTS = 1024;
 struct Point {
   float lat, lon, alt;
   float speed;  // km/h: from the CSV, computed from distance and time for GPX
+  time_t time;  // UTC, 0 = no time
 };
 
 struct Track {
