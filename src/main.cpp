@@ -84,12 +84,27 @@ struct RtcState {
 RTC_DATA_ATTR RtcState rtc;
 
 enum Page {
-  PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_LIVE, PAGE_GG, PAGE_ACCEL, PAGE_WIFI,
-  PAGE_MENU, PAGE_SETTINGS, PAGE_HELP, PAGE_TRACKS, PAGE_TRACK_INFO, PAGE_TRACK_MAP
+  PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_LIVE_INFO, PAGE_LIVE_MAP, PAGE_GG,
+  PAGE_ACCEL, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP, PAGE_TRACKS, PAGE_TRACK_INFO, PAGE_TRACK_MAP
 };
-// MAIN .. MENU are switched with Tab / G0; WIFI only with the NMEA server on,
-// GG and ACCEL only with an accelerometer
-static const int PAGE_CYCLE_COUNT = PAGE_MENU + 1;
+
+// Main pages (left / right, number keys) with their sub pages (up / down).
+// Each group remembers its last sub page. WIFI only with the NMEA server on,
+// ACCEL only with an accelerometer.
+enum PageGroupId { G_POS, G_GPS, G_TRACK, G_ACCEL, G_WIFI, G_MENU, G_COUNT };
+struct PageGroup {
+  Page pages[3];
+  uint8_t count;
+};
+static const PageGroup GROUPS[G_COUNT] = {
+  {{PAGE_MAIN, PAGE_BIG}, 2},
+  {{PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL}, 3},
+  {{PAGE_LIVE_INFO, PAGE_LIVE_MAP}, 2},
+  {{PAGE_GG, PAGE_ACCEL}, 2},
+  {{PAGE_WIFI}, 1},
+  {{PAGE_MENU}, 1},
+};
+static uint8_t groupSub[G_COUNT];  // last sub page of each group
 
 static Config cfg;
 static GpsReader gps;
@@ -123,7 +138,6 @@ static tracks::Track liveTrack;
 static tracks::LoadState liveState;
 static char liveBase[48] = "";  // liveTrack is from this track
 static uint32_t livePoints = 0, liveReadMs = 0;
-static bool liveMap = true;     // map or info
 static uint32_t gpsStandbyMs = 0;     // when the standby command was sent, 0 = GPS on
 static uint32_t gpsStandbyEndMs = 0;  // when the GPS was taken as on again
 static bool gpsStandbyChecked = false;
@@ -795,9 +809,10 @@ static void drawSignalPage() {
     int y = bottom - (bottom - top) * db / maxSnr;
     canvas.drawFastHLine(0, y, 240, COL_BAR);
   }
-  int slot = min(16, 240 / n);
+  const int width = 236;  // right of it the sub page bar
+  int slot = min(16, width / n);
   int barW = max(slot - 2, 1);
-  int x0 = (240 - slot * n) / 2;
+  int x0 = (width - slot * n) / 2;
   for (int i = 0; i < n; i++) {
     int x = x0 + i * slot;
     int h = (bottom - top) * min<int>(sats[i].snr, maxSnr) / maxSnr;
@@ -958,7 +973,7 @@ static void drawAccelChartPage() {
   canvas.drawFastHLine(0, mid - half / 2, 240, COL_BAR);
   canvas.drawFastHLine(0, mid + half / 2, 240, COL_BAR);
   auto toY = [&](int16_t mg) { return mid - (int)(constrain(mg / 1000.0f, -scale, scale) / scale * half); };
-  int x0 = motion::HISTORY - count;  // newest sample at the right edge
+  int x0 = 236 - count;  // newest sample left of the sub page bar, the oldest ones may be cut off
   for (int i = 1; i < count; i++) {
     motion::Sample a = motion::historyAt(i - 1), b = motion::historyAt(i);
     canvas.drawLine(x0 + i - 1, toY(a.vert), x0 + i, toY(b.vert), COL_VERT);
@@ -1257,10 +1272,10 @@ static void drawHelpPage() {
   canvas.setTextDatum(top_left);
   const char* lines[] = {
     "Enter/R  start / stop logging",
-    "Tab ,/ 1-9 0  page (1 pos .. 0 menu)",
+    ",/ Tab 1-6 page  ;. sub page",
     "S settings  T tracks  H help",
     "Z  screen off/sleep   P  screenshot",
-    "G0 click: page  hold: rec",
+    "G0 click: next (sub) page  hold: rec",
     "G0 wakes from deep sleep",
   };
   canvas.setTextColor(TFT_WHITE);
@@ -1575,15 +1590,17 @@ static void updateLiveTrack() {
   liveReadMs = millis();
 }
 
-static void drawLivePage() {
-  drawTitleBar("CURRENT TRACK", liveMap ? "C color I info" : "C color M map");
+static void drawLivePage(bool map) {
+  drawTitleBar("CURRENT TRACK", map ? "C color ; info" : "C color . map");
   canvas.setFont(&fonts::Font2);
   canvas.setTextColor(COL_LABEL);
   if (!rtc.logging) canvas.drawString("Not logging - Enter starts", 3, 22);
   else if (!liveTrack.count || strcmp(liveBase, rtc.baseName) != 0) canvas.drawString("No points yet", 3, 22);
-  else if (liveMap) drawTrackMap(liveTrack);
+  else if (map) drawTrackMap(liveTrack);
   else drawTrackInfo(liveTrack);
 }
+
+static void drawSubPageBar();
 
 static void draw() {
   canvas.fillScreen(COL_BG);
@@ -1596,8 +1613,8 @@ static void draw() {
     drawTrackInfoPage();
   } else if (page == PAGE_TRACK_MAP) {
     drawTrackMapPage();
-  } else if (page == PAGE_LIVE) {
-    drawLivePage();
+  } else if (page == PAGE_LIVE_INFO || page == PAGE_LIVE_MAP) {
+    drawLivePage(page == PAGE_LIVE_MAP);
   } else {
     drawStatusBar();
     if (page == PAGE_MAIN) drawMainPage();
@@ -1611,6 +1628,7 @@ static void draw() {
     else if (page == PAGE_MENU) drawMenuPage();
     else drawHelpPage();
   }
+  drawSubPageBar();
   if (millis() < statusMsgUntil) drawMessageBox(statusMsg);
   canvas.pushSprite(0, 0);
 }
@@ -1740,16 +1758,67 @@ static void sleepNowIfPossible() {
   setScreen(false);
 }
 
-static bool pageAvailable(Page p) {
-  if (p == PAGE_WIFI) return cfg.nmeaServer;
-  if (p == PAGE_GG || p == PAGE_ACCEL) return motion::available();
+static bool groupAvailable(int g) {
+  if (g == G_WIFI) return cfg.nmeaServer;
+  if (g == G_ACCEL) return motion::available();
   return true;
 }
 
-static void nextPage(int dir) {
+// Group and sub page of the current page, false for pages outside the groups.
+static bool findPage(int& g, int& sub) {
+  for (g = 0; g < G_COUNT; g++)
+    for (sub = 0; sub < GROUPS[g].count; sub++)
+      if (GROUPS[g].pages[sub] == page) return true;
+  return false;
+}
+
+static void showGroup(int g) {
+  page = GROUPS[g].pages[groupSub[g]];
+}
+
+// Main page left / right, with the sub page shown there last.
+// Sub page position as a bar at the right edge, one segment per sub page,
+// the current one bright: shows there is more with up / down.
+static void drawSubPageBar() {
+  int g, sub;
+  if (!findPage(g, sub) || GROUPS[g].count < 2) return;
+  const int x = 237, w = 3, top = 20, bottom = 134;
+  int segH = (bottom - top) / GROUPS[g].count;
+  for (int i = 0; i < GROUPS[g].count; i++) {
+    canvas.fillRect(x, top + i * segH + 1, w, segH - 2, i == sub ? TFT_WHITE : COL_BAR);
+  }
+}
+
+static void nextGroup(int dir) {
+  int g, sub;
+  if (!findPage(g, sub)) g = G_POS;
   do {
-    page = (Page)((page + PAGE_CYCLE_COUNT + dir) % PAGE_CYCLE_COUNT);
-  } while (!pageAvailable(page));
+    g = (g + G_COUNT + dir) % G_COUNT;
+  } while (!groupAvailable(g));
+  showGroup(g);
+}
+
+static void nextSubPage(int dir) {
+  int g, sub;
+  if (!findPage(g, sub) || GROUPS[g].count < 2) return;
+  groupSub[g] = (sub + GROUPS[g].count + dir) % GROUPS[g].count;
+  showGroup(g);
+}
+
+// G0: all pages in turn, sub pages first.
+static void nextPageFlat() {
+  int g, sub;
+  if (!findPage(g, sub)) g = sub = 0;
+  if (sub + 1 < GROUPS[g].count) {
+    groupSub[g] = sub + 1;
+    showGroup(g);
+    return;
+  }
+  do {
+    g = (g + 1) % G_COUNT;
+  } while (!groupAvailable(g));
+  groupSub[g] = 0;
+  showGroup(g);
 }
 
 static void saveImuCalibration() {
@@ -1863,6 +1932,7 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     if (c == 'c') toggleMapColor();
     else if (c == 'i') page = PAGE_TRACK_INFO;
     else if (c == 'm') page = PAGE_TRACK_MAP;
+    else if (c == ';' || c == '.') page = page == PAGE_TRACK_INFO ? PAGE_TRACK_MAP : PAGE_TRACK_INFO;
     else if (c == '`' || del || enter) page = PAGE_TRACKS;
     return;
   }
@@ -1883,20 +1953,26 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     }
     if (c == 'x') { motion::resetMax(); showStatus("Max values reset"); return; }
   }
-  if (page == PAGE_LIVE) {
+  if (page == PAGE_LIVE_INFO || page == PAGE_LIVE_MAP) {
     if (c == 'c') { toggleMapColor(); return; }
-    if (c == 'i' || c == 'm') { liveMap = c == 'm'; return; }
+    if (c == 'i' || c == 'm') {
+      groupSub[G_TRACK] = c == 'm';
+      showGroup(G_TRACK);
+      return;
+    }
   }
-  if (isdigit(c)) {  // pages in cycle order: 1 .. 9, 0
-    Page p = (Page)(c == '0' ? 9 : c - '1');
-    if (p == PAGE_WIFI && !cfg.nmeaServer) showStatus("NMEA server is off");
-    else if (!pageAvailable(p)) showStatus("No accelerometer");
-    else page = p;
+  if (c >= '1' && c < '1' + G_COUNT) {  // main pages
+    int g = c - '1';
+    if (g == G_WIFI && !cfg.nmeaServer) showStatus("NMEA server is off");
+    else if (!groupAvailable(g)) showStatus("No accelerometer");
+    else showGroup(g);
     return;
   }
   if (enter || c == 'r') rtc.logging ? stopLogging() : startLogging();
-  else if (tab || c == '/' || c == ' ') nextPage(+1);
-  else if (c == ',') nextPage(-1);
+  else if (tab || c == '/' || c == ' ') nextGroup(+1);
+  else if (c == ',') nextGroup(-1);
+  else if (c == ';') nextSubPage(-1);
+  else if (c == '.') nextSubPage(+1);
   else if (c == 's') openSettings();
   else if (c == 't') openTracks();
   else if (c == 'h') openHelp();
@@ -1938,7 +2014,7 @@ static void handleInput() {
       else if (page == PAGE_TRACKS && trackAction >= 0) trackAction = -1;
       else if (page == PAGE_TRACKS) page = returnPage;
       else if (page == PAGE_TRACK_INFO || page == PAGE_TRACK_MAP) page = PAGE_TRACKS;
-      else nextPage(+1);
+      else nextPageFlat();
     }
   }
 
@@ -2103,7 +2179,7 @@ void loop() {
 
   if (screenOn && now - lastDrawMs > 200) {
     lastDrawMs = now;
-    if (page == PAGE_LIVE) updateLiveTrack();
+    if (page == PAGE_LIVE_INFO || page == PAGE_LIVE_MAP) updateLiveTrack();
     draw();
   }
   delay(5);

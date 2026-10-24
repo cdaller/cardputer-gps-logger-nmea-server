@@ -38,7 +38,7 @@ Cardputer v1.x).
   show distance, duration, altitude range, max speed, start / end time and altitude profile,
   or draw the track as a map (CSV and GPX files). Map and profile are colored by altitude or
   speed, switched with `C`
-- Current track page: info or map (`I` / `M`) of the track being recorded, like on the
+- Current track page: info or map (up / down or `I` / `M`) of the track being recorded, like on the
   tracks page, updated every 5 s
 - Logging to `/gpslogger/tracks/YYYYMMDD_HHMMSS.csv` / `.gpx` (UTC time stamps).
   The GPX file is closed after every point, so it stays valid if power is lost.
@@ -132,8 +132,9 @@ to the `creator` attribute of GPX files.
 | Key (keyboard)     | Action                                  |
 |--------------------|-----------------------------------------|
 | `Enter` / `R`      | start / stop logging                    |
-| `Tab`, `/` , `,`   | switch page: position -> big -> details -> satellites -> signal -> current track -> g-g -> accel chart -> WiFi -> menu (WiFi only with NMEA server on, g-g / chart only with accelerometer) |
-| `1` ... `9`, `0`   | jump to page: 1 position, 2 big, 3 details, 4 satellites, 5 signal, 6 current track, 7 g-g, 8 accel chart, 9 WiFi, 0 menu |
+| `,` `/` (left / right), `Tab` | previous / next main page |
+| `;` `.` (up / down) | previous / next sub page of the main page |
+| `1` ... `6`        | jump to main page, showing its sub page selected last |
 | `I` / `M` / `C`    | current track and track pages: info / map / colors by altitude or speed |
 | `C` / `X`          | acceleration pages: calibrate (standing still) / reset max values |
 | `;` `.` + `Enter`  | menu page: select item (up/down arrow keys) and run it |
@@ -142,10 +143,21 @@ to the `creator` attribute of GPX files.
 | `H`                | help                                    |
 | `Z`                | screen off now (or deep sleep, if active) |
 | `P`                | screenshot of the current page as BMP to `/gpslogger/screenshots/` |
-| **G0 click**       | next page / leave settings / help / tracks |
+| **G0 click**       | next page, all sub pages in turn / leave settings / help / tracks |
 | **G0 hold**        | start / stop logging                    |
 
 Any key turns the screen back on. G0 wakes the device from deep sleep.
+
+Main pages and their sub pages (a bar at the right edge shows the sub page and how many there are):
+
+| Main page          | Sub pages (up / down)                      |
+|--------------------|--------------------------------------------|
+| 1 Position         | position, big (speed / direction / altitude) |
+| 2 GPS              | details, satellites, signal                |
+| 3 Track            | info, map of the track being recorded      |
+| 4 Acceleration     | g-g diagram, chart (Cardputer ADV only)    |
+| 5 WiFi             | NMEA server (only while it is on)          |
+| 6 Menu             | menu                                       |
 
 ## Configuration
 
