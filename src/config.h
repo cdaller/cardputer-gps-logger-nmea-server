@@ -47,6 +47,7 @@ struct Config {
   int16_t tzOffsetMin = 0;        // minutes added to UTC for the display
   bool autoStart = false;
   uint8_t brightness = 128;
+  bool recLed = true;             // RGB LED pulses red once a minute while logging
   bool nmeaServer = false;        // serve NMEA over WiFi (TCP + UDP)
   bool wifiClient = false;        // false: own access point, true: join wifiSsid
   String wifiSsid;

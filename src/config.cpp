@@ -83,6 +83,7 @@ bool configLoad(Config& cfg) {
     else if (key == "tz_offset") cfg.tzOffsetMin = constrain(parseTzMinutes(val), -12 * 60, 14 * 60);
     else if (key == "auto_start") cfg.autoStart = n != 0;
     else if (key == "brightness") cfg.brightness = constrain(n, 8, 255);
+    else if (key == "rec_led") cfg.recLed = n != 0;
     else if (key == "nmea_server") cfg.nmeaServer = n != 0;
     else if (key == "wifi_mode") cfg.wifiClient = val.equalsIgnoreCase("client");
     else if (key == "wifi_ssid") cfg.wifiSsid = val;
@@ -131,6 +132,8 @@ bool configSave(const Config& cfg) {
   f.println("# 1 = start logging automatically after power on");
   f.printf("auto_start=%d\n", cfg.autoStart ? 1 : 0);
   f.printf("brightness=%u\n", cfg.brightness);
+  f.println("# 1 = RGB LED fades in and out red once a minute while logging, 0 = off (not in deep sleep)");
+  f.printf("rec_led=%d\n", cfg.recLed ? 1 : 0);
   f.println("# 1 = send the GPS NMEA sentences over WiFi (TCP server + UDP broadcast)");
   f.printf("nmea_server=%d\n", cfg.nmeaServer ? 1 : 0);
   f.println("# ap = own WiFi network (ap_ssid/ap_pass), client = join wifi_ssid/wifi_pass");

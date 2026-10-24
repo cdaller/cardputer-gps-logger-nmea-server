@@ -59,6 +59,10 @@ static const float RESUME_DIST_M = 20;
 static const uint32_t STANDBY_AFTER_STILL_MS = 30000;
 static const uint16_t GPS_STANDBY_SEC = 15;
 static const uint32_t STANDBY_CHECK_MS = 3500;
+// Recording LED: fades in and out (LED_FADE_MS each) once every LED_PERIOD_MS while logging.
+static const uint32_t LED_PERIOD_MS = 60000;
+static const uint32_t LED_FADE_MS = 1000;
+static const uint8_t LED_MAX = 160;  // of 255, red
 
 // Survives deep sleep.
 struct RtcState {
@@ -117,6 +121,7 @@ static uint32_t gpsStandbyEndMs = 0;  // when the GPS was taken as on again
 static bool gpsStandbyChecked = false;
 static bool gpsStandbyWorked = false;
 static bool gpsStandbyFailed = false;  // module doesn't support standby
+static uint32_t ledStartMs = 0;        // first pulse when logging starts
 
 // ---------------------------------------------------------------- colors
 
@@ -318,6 +323,7 @@ static void startLogging() {
   rtc.paused = false;
   rtc.stillSinceMs = 0;
   lastLogMs = 0;
+  ledStartMs = millis();
   motion::resetMax();
   showStatus("Logging started");
 }
@@ -377,9 +383,10 @@ static void updateGpsStandby() {
   gps.end();
   if (sdOk && rtc.baseName[0]) logger::nmeaFlush(rtc.baseName);
   SD.end();
-  if (displayActive) {
+  if (displayActive) {  // M5 is set up: not in a quiet wake-up
     M5.Display.setBrightness(0);
     M5.Display.sleep();
+    M5.Led.setAllColor(0, 0, 0);  // may be in the middle of a pulse
   }
   // Keep the backlight off while sleeping and during quiet timer wake-ups.
   gpio_reset_pin(PIN_BACKLIGHT);
@@ -980,13 +987,14 @@ enum SettingId {
   S_LOGMODE, S_INTERVAL, S_DISTANCE, S_AUTOPAUSE, S_FORMAT, S_NMEA, S_SLEEP, S_SCREEN, S_FIXTO,
   S_MODULE, S_RX, S_TX, S_BAUD, S_STANDBY,
   S_SERVER, S_WIFIMODE, S_PORT, S_SSID, S_PASS, S_APSSID, S_APPASS,
-  S_TZ, S_AUTOSTART, S_BRIGHT, S_COUNT
+  S_TZ, S_AUTOSTART, S_BRIGHT, S_RECLED, S_COUNT
 };
 static const char* const SETTING_NAMES[S_COUNT] = {
   "Log mode", "Log interval", "Log distance", "Auto pause", "Log format", "NMEA log", "Deep sleep",
   "Screen timeout", "Fix timeout", "GPS module",
   "GPS RX pin", "GPS TX pin", "GPS baud", "GPS standby", "NMEA server", "WiFi mode", "NMEA port",
   "WiFi SSID", "WiFi password", "AP name", "AP password", "Time zone", "Auto start", "Brightness",
+  "Recording LED",
 };
 static const uint32_t INTERVALS[] = {1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600};
 static const uint32_t DISTANCES[] = {5, 10, 20, 50, 100, 200, 500, 1000};
@@ -1054,6 +1062,7 @@ static String settingValue(int id) {
     case S_TZ: return "UTC" + tzText(cfg.tzOffsetMin);
     case S_AUTOSTART: return cfg.autoStart ? "on" : "off";
     case S_BRIGHT: return String(cfg.brightness * 100 / 255) + " %";
+    case S_RECLED: return cfg.recLed ? "on" : "off";
     case S_SERVER: return cfg.nmeaServer ? "on" : "off";
     case S_WIFIMODE: return cfg.wifiClient ? "client" : "own AP";
     case S_PORT: return String(cfg.nmeaPort);
@@ -1138,6 +1147,7 @@ static void changeSetting(int id, int dir) {
     case S_STANDBY: cfg.gpsStandby = !cfg.gpsStandby; break;
     case S_TZ: cfg.tzOffsetMin = cycle(TZ_OFFSETS, cfg.tzOffsetMin, dir); break;
     case S_AUTOSTART: cfg.autoStart = !cfg.autoStart; break;
+    case S_RECLED: cfg.recLed = !cfg.recLed; break;
     case S_SERVER: cfg.nmeaServer = !cfg.nmeaServer; break;
     case S_WIFIMODE: cfg.wifiClient = !cfg.wifiClient; break;
     case S_BRIGHT:
@@ -1915,6 +1925,23 @@ static void feedMotion() {
   }
 }
 
+// Red pulse while logging, brightness squared for an even looking fade.
+// Not in deep sleep: the quiet wake-ups don't use the LED.
+static void updateRecLed() {
+  static uint8_t shown = 0;
+  uint8_t level = 0;
+  if (rtc.logging && cfg.recLed) {
+    uint32_t t = (millis() - ledStartMs) % LED_PERIOD_MS;
+    if (t < 2 * LED_FADE_MS) {
+      float f = (t < LED_FADE_MS ? t : 2 * LED_FADE_MS - t) / (float)LED_FADE_MS;
+      level = f * f * LED_MAX;
+    }
+  }
+  if (level == shown) return;
+  shown = level;
+  M5.Led.setAllColor(level, 0, 0);
+}
+
 void loop() {
   M5.update();
   motion::update();
@@ -1922,6 +1949,7 @@ void loop() {
   if (gps.baudLocked() && cfg.gpsBaud == 0) rtc.detectedBaud = gps.baud();
   feedMotion();
   updateGpsStandby();
+  updateRecLed();
   handleInput();
   nmeaserver::update();
   int devices = nmeaserver::deviceCount();

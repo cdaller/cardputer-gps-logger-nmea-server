@@ -45,6 +45,8 @@ Cardputer v1.x).
   distance (5 m … 1 km); auto pause while standing still; inaccurate fixes are never
   recorded. See [Log modes](#log-modes)
 - Configurable format, time zone, brightness, timeouts
+- RGB LED fades in and out red once a minute while logging (`rec_led`, default on; not
+  during deep sleep)
 - Deep sleep between points while logging (time mode, interval >= 15 s)
 - GPS standby while the accelerometer sees no motion (Cardputer ADV), see
   [GPS standby](#gps-standby)
@@ -163,6 +165,7 @@ fix_timeout=60            # max. seconds to wait for a fix after deep sleep wake
 tz_offset=0               # added to UTC for the display: hours or hours:minutes (+5:30)
 auto_start=0              # start logging after power on
 brightness=128
+rec_led=1                 # 1 = RGB LED pulses red once a minute while logging
 nmea_server=0             # 1 = send NMEA over WiFi
 wifi_mode=ap              # ap = own network, client = join wifi_ssid
 wifi_ssid=
