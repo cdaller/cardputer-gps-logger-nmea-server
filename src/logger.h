@@ -8,6 +8,8 @@ struct LogPoint {
   float altM, speedKmh, courseDeg, hdop;
   uint8_t sats;
   int8_t batteryPct;
+  bool hasAccel;                   // peaks since the previous point, g
+  float accelG, brakeG, latG, upG, downG;
 };
 
 #define LOG_DIR "/gpslogger/tracks"

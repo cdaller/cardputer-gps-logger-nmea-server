@@ -61,6 +61,13 @@ void GpsReader::update() {
   }
 }
 
+void GpsReader::sendCommand(const char* body) {
+  if (!_running) return;
+  uint8_t cs = 0;
+  for (const char* p = body; *p; p++) cs ^= *p;
+  _serial.printf("$%s*%02X\r\n", body, cs);
+}
+
 bool GpsReader::hasFix() {
   return _gps.location.isValid() && _gps.location.age() < 3000;
 }

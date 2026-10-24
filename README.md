@@ -27,6 +27,11 @@ Cardputer v1.x).
 - Signal page: signal strength (SNR, dB-Hz) of every satellite in view as a bar chart,
   green = used in the fix; letters below the bars: G GPS, R GLONASS, E Galileo,
   C BeiDou, J QZSS, S SBAS
+- Acceleration pages (Cardputer ADV, built-in accelerometer): g-g diagram with the current
+  acceleration, a 2 s trail and the max per direction, an up / down bar, plus a chart of the
+  last 24 s; longitudinal (accelerate / brake), lateral (left / right) and vertical (up /
+  down) in g, for cars, bikes or planes; max values reset with
+  `X` and at each new track. See [Acceleration](#acceleration)
 - Menu page: start/stop logging, start/stop NMEA server, settings, tracks, help, screen off /
   deep sleep - no need to remember key letters
 - Tracks page: all track files on the SD card with type and size, newest first; delete them,
@@ -41,6 +46,8 @@ Cardputer v1.x).
   recorded. See [Log modes](#log-modes)
 - Configurable format, time zone, brightness, timeouts
 - Deep sleep between points while logging (time mode, interval >= 15 s)
+- GPS standby while the accelerometer sees no motion (Cardputer ADV), see
+  [GPS standby](#gps-standby)
 - GPS module presets plus custom RX/TX pins and baud rate, or automatic baud detection
 - Keyboard control when a keyboard is detected (matrix keyboard on v1.x, TCA8418 on ADV);
   without keyboard the G0 button still works
@@ -120,8 +127,9 @@ to the `creator` attribute of GPX files.
 | Key (keyboard)     | Action                                  |
 |--------------------|-----------------------------------------|
 | `Enter` / `R`      | start / stop logging                    |
-| `Tab`, `/` , `,`   | switch page: position -> big -> details -> satellites -> signal -> WiFi -> menu (WiFi only with NMEA server on) |
-| `1` ... `7`        | jump to page: 1 position, 2 big, 3 details, 4 satellites, 5 signal, 6 WiFi, 7 menu |
+| `Tab`, `/` , `,`   | switch page: position -> big -> details -> satellites -> signal -> g-g -> accel chart -> WiFi -> menu (WiFi only with NMEA server on, g-g / chart only with accelerometer) |
+| `1` ... `9`        | jump to page: 1 position, 2 big, 3 details, 4 satellites, 5 signal, 6 g-g, 7 accel chart, 8 WiFi, 9 menu |
+| `C` / `X`          | acceleration pages: calibrate (standing still) / reset max values |
 | `;` `.` + `Enter`  | menu page: select item (up/down arrow keys) and run it |
 | `S`                | settings (`;` `.` select, `,` `/` change, `` ` `` / `Del` save & exit) |
 | `T`                | tracks (`;` `.` select, `Enter` actions: info / map / delete; shortcuts `I` `M` `D`, `` ` `` / `Del` back) |
@@ -162,6 +170,10 @@ wifi_pass=
 ap_ssid=GPS-NMEA-Logger
 ap_pass=k7rmx2qhwa        # random on first start; empty = open network, else min. 8 characters
 nmea_port=2000            # TCP server and UDP broadcast port
+gps_standby=0             # 1 = GPS to standby while not moving (Cardputer ADV)
+imu_up=0,0,0              # accelerometer calibration, set with C on the acceleration pages
+imu_fwd=0,0,0
+imu_fwd_learned=0
 ```
 
 WiFi names and passwords can also be typed in the settings page: select the entry, press
@@ -232,6 +244,49 @@ So points are filtered before they are written:
 * **Distance**: a point every `log_distance` meters.
 * **Auto pause** (default on, all modes): after 10 s below 1.5 km/h recording pauses
   (status bar shows `PAUSE`) and resumes above 3 km/h or after moving more than 20 m.
+
+## Acceleration
+
+The Cardputer ADV has an accelerometer (BMI270); v1.x has none, there the two pages are
+left out. To measure in a car, fix the Cardputer (e.g. on the dashboard, any tilt), stand
+still and press `C` on the g-g or chart page: this measures which way is up. Forward is then
+learned from the GPS while driving: the acceleration that goes along with the speed changes
+points forward. Until that happened (a few speed-ups / brakings, the pages show
+`learning fwd`) longitudinal and lateral are mixed up. The calibration is stored in
+`config.txt`; press `C` again after moving the Cardputer.
+
+Values are 100 ms averages, smoothed, without gravity:
+
+* **Lon**: + = accelerating, - = braking. **Lat**: + = to the right, - = to the left.
+  **Vert**: + = up, - = down.
+* **Max**: accel / brake, left / right, up / down; reset with `X` and when a new track starts.
+* **g-g diagram**: red dot = now, grey = last 2 s, orange = max per direction. Scale 0.5,
+  1 or 2 g, whichever holds the max values. The bar right of it shows vertical (magenta = now,
+  orange = max up / down) with its own scale, written below it.
+* **Chart**: lon (cyan), lat (yellow) and vertical (magenta) of the last 24 s; below it the
+  max values (`A` accel, `B` brake, `L` left, `R` right, `U` up, `D` down).
+* **CSV tracks** get five more columns: `accel_g`, `brake_g`, `lateral_g`, `up_g`, `down_g`
+  = max since the previous point (empty without calibration).
+* **Web page**: current and max values in the GPS table.
+
+All axes are fixed to the vehicle as calibrated, not to the ground. In a plane, calibrate
+on the ground: vertical then is the load factor minus 1 (+1 g in a 60° level turn, where a
+pilot reads 2 g). Pitched, gravity shows in lon (about 0.17 g at 10° pitch); banked, it
+shows in lat, except in a coordinated turn.
+
+## GPS standby
+
+With `gps_standby=1` (Cardputer ADV) the accelerometer watches for motion. After 30 s
+without motion, while the GPS also reports less than 1.5 km/h (or has no fix), the GPS
+module is put into standby for 15 s (`$PCAS12` command of CASIC modules: ATGM336H on the
+CAP LoRa-1262, AT6668, AT6558), again each time it wakes up, until motion starts. The status
+bar shows `GPS STBY`, logging is paused. The module can't be woken early, so after starting
+to move it takes up to 15 s plus a hot fix (1-2 s) until positions come again.
+
+Not all module versions support the command: if the GPS keeps sending, standby is switched
+off until the next start (settings show `on (unsupported)`). It is not used with the NMEA
+server on or while deep sleep is active. The motion thresholds are first estimates; the
+`vib` value on the acceleration pages (shown until calibrated) is the measured vibration.
 
 ## Deep sleep
 

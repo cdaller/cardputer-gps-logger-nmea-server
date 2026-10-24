@@ -15,6 +15,7 @@
 #include "config.h"
 #include "gps.h"
 #include "logger.h"
+#include "motion.h"
 #include "nmea_server.h"
 #include "tracks.h"
 #include "version.h"
@@ -49,6 +50,15 @@ static const float PAUSE_KMH = 1.5f;
 static const float RESUME_KMH = 3;
 static const uint32_t PAUSE_AFTER_SEC = 10;
 static const float RESUME_DIST_M = 20;
+// GPS standby: after STANDBY_AFTER_STILL_MS without motion the GPS module is sent
+// to timed standby for GPS_STANDBY_SEC ($PCAS12, CASIC modules: ATGM336H, AT6558,
+// AT6668), and again each time it wakes up while still not moving. It can't be
+// woken early, so after starting to move it takes up to GPS_STANDBY_SEC plus a
+// hot fix until positions come again. A module still sending NMEA
+// STANDBY_CHECK_MS after the command doesn't support it.
+static const uint32_t STANDBY_AFTER_STILL_MS = 30000;
+static const uint16_t GPS_STANDBY_SEC = 15;
+static const uint32_t STANDBY_CHECK_MS = 3500;
 
 // Survives deep sleep.
 struct RtcState {
@@ -70,10 +80,11 @@ struct RtcState {
 RTC_DATA_ATTR RtcState rtc;
 
 enum Page {
-  PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP,
-  PAGE_TRACKS, PAGE_TRACK_INFO, PAGE_TRACK_MAP
+  PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_GG, PAGE_ACCEL, PAGE_WIFI, PAGE_MENU,
+  PAGE_SETTINGS, PAGE_HELP, PAGE_TRACKS, PAGE_TRACK_INFO, PAGE_TRACK_MAP
 };
-// MAIN .. MENU are switched with Tab / G0; WIFI only with the NMEA server on
+// MAIN .. MENU are switched with Tab / G0; WIFI only with the NMEA server on,
+// GG and ACCEL only with an accelerometer
 static const int PAGE_CYCLE_COUNT = PAGE_MENU + 1;
 
 static Config cfg;
@@ -101,6 +112,11 @@ static int trackSel = 0;
 static bool trackDeleteAsk = false;
 static int trackAction = -1;   // selection in the action popup, -1 = closed
 static tracks::Track track;    // loaded for the info and map pages
+static uint32_t gpsStandbyMs = 0;     // when the standby command was sent, 0 = GPS on
+static uint32_t gpsStandbyEndMs = 0;  // when the GPS was taken as on again
+static bool gpsStandbyChecked = false;
+static bool gpsStandbyWorked = false;
+static bool gpsStandbyFailed = false;  // module doesn't support standby
 
 // ---------------------------------------------------------------- colors
 
@@ -218,6 +234,7 @@ static bool buildPoint(LogPoint& p, int batteryPct) {
   p.hdop = g.hdop.isValid() ? g.hdop.hdop() : 0;
   p.sats = g.satellites.isValid() ? g.satellites.value() : 0;
   p.batteryPct = batteryPct;
+  p.hasAccel = false;
   return true;
 }
 
@@ -271,6 +288,8 @@ static LogResult logPoint(int batteryPct) {
   if (!buildPoint(p, batteryPct)) return LOG_NO_FIX;
   LogResult result = filterPoint(p);
   if (result != LOG_OK) return result;
+  p.hasAccel = motion::calibrated();
+  if (p.hasAccel) motion::takePeaks(p.accelG, p.brakeG, p.latG, p.upG, p.downG);
   if (!logger::write(p, cfg.logFormat, rtc.baseName, sizeof(rtc.baseName))) return LOG_SD_ERROR;
   rtc.points++;
   rtc.hasLast = true;
@@ -299,6 +318,7 @@ static void startLogging() {
   rtc.paused = false;
   rtc.stillSinceMs = 0;
   lastLogMs = 0;
+  motion::resetMax();
   showStatus("Logging started");
 }
 
@@ -306,6 +326,49 @@ static void stopLogging() {
   if (rtc.baseName[0]) logger::nmeaFlush(rtc.baseName);  // also empties the buffer on SD errors
   rtc.logging = false;
   showStatus("Logging stopped");
+}
+
+// ---------------------------------------------------------------- GPS standby
+
+// Not with deep sleep (has its own wake-ups) or the NMEA server (devices want positions).
+static void updateGpsStandby() {
+  if (!cfg.gpsStandby || gpsStandbyFailed || !motion::available() || canDeepSleep() || cfg.nmeaServer) {
+    gpsStandbyMs = 0;
+    return;
+  }
+  uint32_t now = millis();
+  if (gpsStandbyMs) {
+    uint32_t since = now - gpsStandbyMs;
+    if (!gpsStandbyChecked && since >= STANDBY_CHECK_MS) {
+      gpsStandbyChecked = true;
+      if ((int32_t)(gps.lastDataMs() - gpsStandbyMs) > (int32_t)(STANDBY_CHECK_MS - 1500)) {
+        gpsStandbyMs = 0;
+        gpsStandbyEndMs = now;
+        if (!gpsStandbyWorked) {  // a module that did standby before just missed one command
+          gpsStandbyFailed = true;
+          showStatus("GPS has no standby", 4000);
+        }
+        return;
+      }
+      gpsStandbyWorked = true;
+    }
+    // The module wakes up by itself after GPS_STANDBY_SEC
+    if (since >= GPS_STANDBY_SEC * 1000UL || !motion::still()) {
+      gpsStandbyMs = 0;
+      gpsStandbyEndMs = now;
+    }
+    return;
+  }
+  bool slow = !gps.hasFix() || gps.gps().speed.kmph() < PAUSE_KMH;  // the GPS agrees
+  bool awake = (int32_t)(gps.lastDataMs() - gpsStandbyEndMs) > 0;   // can receive the command
+  if (motion::stillMs() >= STANDBY_AFTER_STILL_MS && slow && awake && gps.baudLocked()) {
+    char cmd[16];
+    snprintf(cmd, sizeof(cmd), "PCAS12,%u", GPS_STANDBY_SEC);
+    gps.sendCommand(cmd);
+    gpsStandbyMs = now | 1;  // never 0
+    gpsStandbyChecked = false;
+    if (rtc.logging && cfg.autoPause) rtc.paused = true;
+  }
 }
 
 // ---------------------------------------------------------------- deep sleep
@@ -437,7 +500,10 @@ static void drawStatusBar() {
   int used = gps.gps().satellites.value();
   String sat, satCount;
   uint16_t satCol;
-  if (!gps.baudLocked()) {
+  if (gpsStandbyMs) {
+    sat = "GPS STBY";
+    satCol = COL_LABEL;
+  } else if (!gps.baudLocked()) {
     sat = "BAUD";
     satCount = " " + String(gps.baud());
     satCol = TFT_ORANGE;
@@ -733,18 +799,193 @@ static void drawSignalPage() {
   canvas.setTextDatum(top_left);
 }
 
+// ---- acceleration pages
+
+static const uint16_t COL_LON = TFT_CYAN;
+static const uint16_t COL_LAT = TFT_YELLOW;
+static const uint16_t COL_VERT = TFT_MAGENTA;
+static const uint16_t COL_ENVELOPE = TFT_ORANGE;
+
+// Smallest of 0.5 / 1 / 2 g that holds g.
+static float accelScale(float g) {
+  return g <= 0.45f ? 0.5f : g <= 0.9f ? 1.0f : 2.0f;
+}
+
+// Calibration state in the bottom right corner; false if not calibrated.
+static bool drawAccelState(int x, int y) {
+  canvas.setFont(&fonts::Font0);
+  canvas.setTextDatum(top_right);
+  bool cal = motion::calibrated();
+  canvas.setTextColor(!cal ? TFT_ORANGE : motion::forwardLearned() ? COL_LABEL : TFT_ORANGE);
+  canvas.drawString(!cal ? "C calibrate" : motion::forwardLearned() ? "C cal X reset" : "learning fwd", x, y);
+  canvas.setTextDatum(top_left);
+  return cal;
+}
+
+static void drawNotCalibrated() {
+  canvas.setFont(&fonts::Font2);
+  canvas.setTextColor(TFT_WHITE);
+  canvas.drawString("Accelerometer not calibrated:", 3, 26);
+  canvas.setTextColor(COL_LABEL);
+  canvas.drawString("Fix it in the car, stand still", 3, 46);
+  canvas.drawString("and press C. Forward is learned", 3, 62);
+  canvas.drawString("from the GPS when driving.", 3, 78);
+  canvas.setTextColor(motion::still() ? TFT_GREEN : TFT_ORANGE);
+  canvas.drawString(motion::still() ? "still - ready" : "moving", 3, 100);
+  canvas.setFont(&fonts::Font0);
+  canvas.setTextColor(COL_LABEL);
+  canvas.drawString("vib " + String(motion::vibration() * 1000, 0) + " mg", 3, 124);
+  drawAccelState(237, 124);
+}
+
+// ".32" below 1 g, "1.3" above: short enough for 6 values in one Font0 line.
+static String shortG(float g) {
+  if (g >= 0.995f) return String(g, 1);
+  char buf[8];
+  snprintf(buf, sizeof(buf), ".%02d", (int)lroundf(g * 100));
+  return buf;
+}
+
+// G-G diagram: forward is up, right is right. Dot = now with a 2 s trail,
+// orange = max per direction. Right of it a bar for up / down, then the values.
+static void drawGgPage() {
+  if (!motion::calibrated()) { drawNotCalibrated(); return; }
+  const motion::Maxima& m = motion::maxima();
+  const int cx = 57, cy = 77, r = 54;
+  float scale = accelScale(max(max(m.accel, m.brake), max(m.left, m.right)));
+  float k = r / scale;
+  canvas.drawCircle(cx, cy, r, COL_LABEL);
+  canvas.drawCircle(cx, cy, r / 2, COL_BAR);
+  canvas.drawFastHLine(cx - r, cy, 2 * r + 1, COL_BAR);
+  canvas.drawFastVLine(cx, cy - r, 2 * r + 1, COL_BAR);
+  canvas.setFont(&fonts::Font0);
+  canvas.setTextColor(COL_LABEL);
+  canvas.drawString(String(scale, 1) + "g", cx + r - 18, cy - r);
+
+  auto sectorPoint = [&](int s, int& x, int& y) {
+    float a = s * TWO_PI / motion::SECTORS, g = min(motion::envelope(s), scale);
+    x = cx + sinf(a) * g * k;
+    y = cy - cosf(a) * g * k;
+  };
+  for (int s = 0; s < motion::SECTORS; s++) {
+    int n = (s + 1) % motion::SECTORS;
+    if (!motion::envelope(s) || !motion::envelope(n)) continue;
+    int x0, y0, x1, y1;
+    sectorPoint(s, x0, y0);
+    sectorPoint(n, x1, y1);
+    canvas.drawLine(x0, y0, x1, y1, COL_ENVELOPE);
+  }
+
+  auto toX = [&](float lat) { return cx + (int)(constrain(lat, -scale, scale) * k); };
+  auto toY = [&](float lon) { return cy - (int)(constrain(lon, -scale, scale) * k); };
+  int count = motion::historyCount();
+  for (int i = max(0, count - 20); i < count; i++) {
+    motion::Sample smp = motion::historyAt(i);
+    canvas.fillCircle(toX(smp.lat / 1000.0f), toY(smp.lon / 1000.0f), 1, COL_LABEL);
+  }
+  canvas.fillCircle(toX(motion::latG()), toY(motion::lonG()), 4, TFT_RED);
+
+  // Up / down bar with its own scale: filled = now, orange ticks = max
+  const int bx = 115, bw = 7;
+  float vert = motion::vertG();
+  float vScale = accelScale(max(max(m.up, m.down), fabsf(vert)));
+  auto toBarY = [&](float g) { return cy - (int)(constrain(g, -vScale, vScale) / vScale * r); };
+  canvas.drawRect(bx, cy - r, bw, 2 * r + 1, COL_LABEL);
+  int vy = toBarY(vert);
+  canvas.fillRect(bx + 1, min(vy, cy), bw - 2, abs(vy - cy) + 1, COL_VERT);
+  canvas.drawFastHLine(bx - 2, cy, bw + 4, COL_LABEL);
+  if (m.up) canvas.drawFastHLine(bx - 2, toBarY(m.up), bw + 4, COL_ENVELOPE);
+  if (m.down) canvas.drawFastHLine(bx - 2, toBarY(-m.down), bw + 4, COL_ENVELOPE);
+  canvas.setFont(&fonts::Font0);
+  canvas.setTextColor(COL_LABEL);
+  canvas.setTextDatum(top_center);
+  canvas.drawString(String(vScale, 1), bx + bw / 2, 124);
+  canvas.setTextDatum(top_left);
+
+  // Values: now (g, with sign) and max pairs
+  const int lx = 128, vx = 237;
+  auto value = [&](int y, const char* label, const String& text, uint16_t col) {
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(COL_LABEL);
+    canvas.drawString(label, lx, y);
+    canvas.setTextColor(col);
+    canvas.setTextDatum(top_right);
+    canvas.drawString(text, vx, y);
+    canvas.setTextDatum(top_left);
+  };
+  auto now = [](float g) {
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%+.2f g", g);
+    return String(buf);
+  };
+  value(20, "Lon", now(motion::lonG()), COL_LON);
+  value(35, "Lat", now(motion::latG()), COL_LAT);
+  value(50, "Vert", now(vert), COL_VERT);
+  canvas.drawFastHLine(lx, 68, vx - lx, COL_BAR);
+  value(71, "A/B", String(m.accel, 2) + "/" + String(m.brake, 2), TFT_GREEN);
+  value(86, "L/R", String(m.left, 2) + "/" + String(m.right, 2), COL_ENVELOPE);
+  value(101, "U/D", String(m.up, 2) + "/" + String(m.down, 2), COL_VERT);
+  drawAccelState(vx, 124);
+}
+
+// Longitudinal, lateral and vertical acceleration of the last 24 s, 1 px = 100 ms.
+static void drawAccelChartPage() {
+  if (!motion::calibrated()) { drawNotCalibrated(); return; }
+  const int top = 21, bottom = 119, mid = (top + bottom) / 2, half = (bottom - top) / 2;
+  int count = motion::historyCount();
+  int peak = 0;
+  for (int i = 0; i < count; i++) {
+    motion::Sample smp = motion::historyAt(i);
+    peak = max(peak, max(max(abs(smp.lon), abs(smp.lat)), abs(smp.vert)));
+  }
+  float scale = accelScale(peak / 1000.0f);
+  canvas.drawFastHLine(0, mid, 240, COL_LABEL);
+  canvas.drawFastHLine(0, mid - half / 2, 240, COL_BAR);
+  canvas.drawFastHLine(0, mid + half / 2, 240, COL_BAR);
+  auto toY = [&](int16_t mg) { return mid - (int)(constrain(mg / 1000.0f, -scale, scale) / scale * half); };
+  int x0 = motion::HISTORY - count;  // newest sample at the right edge
+  for (int i = 1; i < count; i++) {
+    motion::Sample a = motion::historyAt(i - 1), b = motion::historyAt(i);
+    canvas.drawLine(x0 + i - 1, toY(a.vert), x0 + i, toY(b.vert), COL_VERT);
+    canvas.drawLine(x0 + i - 1, toY(a.lat), x0 + i, toY(b.lat), COL_LAT);
+    canvas.drawLine(x0 + i - 1, toY(a.lon), x0 + i, toY(b.lon), COL_LON);
+  }
+  canvas.setFont(&fonts::Font0);
+  canvas.setTextColor(COL_LABEL);
+  canvas.drawString("+" + String(scale, 1) + "g", 2, top);
+  canvas.drawString("-" + String(scale, 1) + "g", 2, bottom - 8);
+
+  const motion::Maxima& m = motion::maxima();
+  canvas.setTextColor(COL_LON);
+  canvas.drawString("lon", 2, 124);
+  canvas.setTextColor(COL_LAT);
+  canvas.drawString("lat", 23, 124);
+  canvas.setTextColor(COL_VERT);
+  canvas.drawString("up", 44, 124);
+  canvas.setTextColor(TFT_WHITE);
+  canvas.drawString("A" + shortG(m.accel) + " B" + shortG(m.brake) + " L" + shortG(m.left) + " R" +
+                        shortG(m.right) + " U" + shortG(m.up) + " D" + shortG(m.down),
+                    62, 124);
+  if (!motion::forwardLearned()) {
+    canvas.setTextColor(TFT_ORANGE);
+    canvas.setTextDatum(top_right);
+    canvas.drawString("learning fwd", 237, top);
+    canvas.setTextDatum(top_left);
+  }
+}
+
 // ---------------------------------------------------------------- settings
 
 enum SettingId {
   S_LOGMODE, S_INTERVAL, S_DISTANCE, S_AUTOPAUSE, S_FORMAT, S_NMEA, S_SLEEP, S_SCREEN, S_FIXTO,
-  S_MODULE, S_RX, S_TX, S_BAUD,
+  S_MODULE, S_RX, S_TX, S_BAUD, S_STANDBY,
   S_SERVER, S_WIFIMODE, S_PORT, S_SSID, S_PASS, S_APSSID, S_APPASS,
   S_TZ, S_AUTOSTART, S_BRIGHT, S_COUNT
 };
 static const char* const SETTING_NAMES[S_COUNT] = {
   "Log mode", "Log interval", "Log distance", "Auto pause", "Log format", "NMEA log", "Deep sleep",
   "Screen timeout", "Fix timeout", "GPS module",
-  "GPS RX pin", "GPS TX pin", "GPS baud", "NMEA server", "WiFi mode", "NMEA port",
+  "GPS RX pin", "GPS TX pin", "GPS baud", "GPS standby", "NMEA server", "WiFi mode", "NMEA port",
   "WiFi SSID", "WiFi password", "AP name", "AP password", "Time zone", "Auto start", "Brightness",
 };
 static const uint32_t INTERVALS[] = {1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600};
@@ -804,6 +1045,12 @@ static String settingValue(int id) {
     case S_RX: return String(cfg.gpsRx);
     case S_TX: return String(cfg.gpsTx);
     case S_BAUD: return cfg.gpsBaud ? String(cfg.gpsBaud) : String("auto");
+    case S_STANDBY:
+      if (!cfg.gpsStandby) return "off";
+      if (!motion::available()) return "on (no IMU)";
+      if (gpsStandbyFailed) return "on (unsupported)";
+      if (cfg.nmeaServer) return "on (WiFi on)";
+      return cfg.deepSleep && cfg.logMode == LOG_MODE_TIME ? "on (deep sleep)" : "on";
     case S_TZ: return "UTC" + tzText(cfg.tzOffsetMin);
     case S_AUTOSTART: return cfg.autoStart ? "on" : "off";
     case S_BRIGHT: return String(cfg.brightness * 100 / 255) + " %";
@@ -888,6 +1135,7 @@ static void changeSetting(int id, int dir) {
     case S_RX: cfg.gpsRx = constrain(cfg.gpsRx + dir, -1, 48); cfg.gpsModule = GPS_CUSTOM; break;
     case S_TX: cfg.gpsTx = constrain(cfg.gpsTx + dir, -1, 48); cfg.gpsModule = GPS_CUSTOM; break;
     case S_BAUD: cfg.gpsBaud = cycle(BAUDS, cfg.gpsBaud, dir); break;
+    case S_STANDBY: cfg.gpsStandby = !cfg.gpsStandby; break;
     case S_TZ: cfg.tzOffsetMin = cycle(TZ_OFFSETS, cfg.tzOffsetMin, dir); break;
     case S_AUTOSTART: cfg.autoStart = !cfg.autoStart; break;
     case S_SERVER: cfg.nmeaServer = !cfg.nmeaServer; break;
@@ -910,6 +1158,9 @@ static void openSettings() {
 static void closeSettings() {
   bool gpsChanged = cfg.gpsRx != cfgBeforeEdit.gpsRx || cfg.gpsTx != cfgBeforeEdit.gpsTx ||
                     cfg.gpsBaud != cfgBeforeEdit.gpsBaud;
+  if (gpsChanged || cfg.gpsModule != cfgBeforeEdit.gpsModule || cfg.gpsStandby != cfgBeforeEdit.gpsStandby) {
+    gpsStandbyFailed = gpsStandbyWorked = false;  // try again, maybe another module
+  }
   if (gpsChanged) {
     rtc.detectedBaud = 0;
     startGps();
@@ -988,7 +1239,7 @@ static void drawHelpPage() {
   canvas.setTextDatum(top_left);
   const char* lines[] = {
     "Enter/R  start / stop logging",
-    "Tab ,/ 1-7  page (1 pos .. 7 menu)",
+    "Tab ,/ 1-9  page (1 pos .. 9 menu)",
     "S settings  T tracks  H help",
     "Z  screen off/sleep   P  screenshot",
     "G0 click: page  hold: rec",
@@ -1244,6 +1495,8 @@ static void draw() {
     else if (page == PAGE_DETAILS) drawDetailsPage();
     else if (page == PAGE_SATS) drawSatsPage();
     else if (page == PAGE_SIGNAL) drawSignalPage();
+    else if (page == PAGE_GG) drawGgPage();
+    else if (page == PAGE_ACCEL) drawAccelChartPage();
     else if (page == PAGE_WIFI) drawWifiPage();
     else if (page == PAGE_MENU) drawMenuPage();
     else drawHelpPage();
@@ -1300,7 +1553,7 @@ static String webStatusHtml() {
   TinyGPSPlus& g = gps.gps();
   bool fix = gps.hasFix();
   String s;
-  char buf[64];
+  char buf[80];
   auto row = [&](const char* label, const char* value) {
     s += "<tr><td>";
     s += label;
@@ -1309,7 +1562,7 @@ static String webStatusHtml() {
     s += "</td></tr>";
   };
   bool gpsAlive = gps.lastDataMs() && millis() - gps.lastDataMs() < 5000;
-  row("Status", !gpsAlive ? "no GPS data" : fix ? "fix" : "no fix");
+  row("Status", gpsStandbyMs ? "GPS standby (no motion)" : !gpsAlive ? "no GPS data" : fix ? "fix" : "no fix");
   if (fix) {
     double lat = g.location.lat(), lon = g.location.lng();
     snprintf(buf, sizeof(buf), "%.6f %c", fabs(lat), lat >= 0 ? 'N' : 'S');
@@ -1337,6 +1590,17 @@ static String webStatusHtml() {
   if (rtc.logging) snprintf(buf, sizeof(buf), "recording, %lu points %s", (unsigned long)rtc.points, name ? name + 1 : "");
   else strcpy(buf, "off");
   row("Logging", buf);
+  if (motion::calibrated()) {
+    snprintf(buf, sizeof(buf), "lon %+.2f, lat %+.2f, vert %+.2f g%s", motion::lonG(), motion::latG(),
+             motion::vertG(), motion::forwardLearned() ? "" : " (learning)");
+    row("Acceleration", buf);
+    const motion::Maxima& m = motion::maxima();
+    snprintf(buf, sizeof(buf), "accel %.2f, brake %.2f, left %.2f, right %.2f, up %.2f, down %.2f g", m.accel,
+             m.brake, m.left, m.right, m.up, m.down);
+    row("Max accel.", buf);
+  } else if (motion::available()) {
+    row("Acceleration", "not calibrated");
+  }
   int mv = batteryMvUi();
   snprintf(buf, sizeof(buf), "%.2f V, %d %%", mv / 1000.0f, batteryPctFromMv(mv));
   row("Battery", buf);
@@ -1366,10 +1630,22 @@ static void sleepNowIfPossible() {
   setScreen(false);
 }
 
+static bool pageAvailable(Page p) {
+  if (p == PAGE_WIFI) return cfg.nmeaServer;
+  if (p == PAGE_GG || p == PAGE_ACCEL) return motion::available();
+  return true;
+}
+
 static void nextPage(int dir) {
   do {
     page = (Page)((page + PAGE_CYCLE_COUNT + dir) % PAGE_CYCLE_COUNT);
-  } while (page == PAGE_WIFI && !cfg.nmeaServer);
+  } while (!pageAvailable(page));
+}
+
+static void saveImuCalibration() {
+  motion::getCalibration(cfg.imuUp, cfg.imuFwd);
+  cfg.imuFwdLearned = motion::forwardLearned();
+  if (sdOk) configSave(cfg);
 }
 
 static void openHelp() {
@@ -1484,9 +1760,22 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     if (c == '.') { menuSel = (menuSel + 1) % M_COUNT; return; }
     if (enter) { menuSelect(menuSel); return; }
   }
+  if (page == PAGE_GG || page == PAGE_ACCEL) {
+    if (c == 'c') {
+      if (motion::calibrate()) {
+        saveImuCalibration();
+        showStatus("Calibrated, now drive");
+      } else {
+        showStatus("Not still - try again");
+      }
+      return;
+    }
+    if (c == 'x') { motion::resetMax(); showStatus("Max values reset"); return; }
+  }
   if (c >= '1' && c < '1' + PAGE_CYCLE_COUNT) {  // pages in cycle order
     Page p = (Page)(c - '1');
     if (p == PAGE_WIFI && !cfg.nmeaServer) showStatus("NMEA server is off");
+    else if (!pageAvailable(p)) showStatus("No accelerometer");
     else page = p;
     return;
   }
@@ -1598,6 +1887,7 @@ void setup() {
     if (sdOk) configSave(cfg);
   }
   M5.Display.setBrightness(cfg.brightness);
+  if (motion::begin()) motion::setCalibration(cfg.imuUp, cfg.imuFwd, cfg.imuFwdLearned);
   startGps();
   web::setStatusHtml(webStatusHtml);
   if (cfg.nmeaServer && !wifiConfigured()) {
@@ -1613,10 +1903,25 @@ void setup() {
   lastInputMs = millis();
 }
 
+// Each new fix's speed to the accelerometer, which learns forward from it.
+static void feedMotion() {
+  static uint32_t lastFixTime = 0;
+  TinyGPSPlus& g = gps.gps();
+  if (!gps.hasFix() || !g.time.isValid() || !g.speed.isValid() || g.time.value() == lastFixTime) return;
+  lastFixTime = g.time.value();
+  if (motion::gpsSpeed(g.speed.kmph(), millis())) {
+    saveImuCalibration();
+    showStatus("Forward direction learned");
+  }
+}
+
 void loop() {
   M5.update();
+  motion::update();
   gps.update();
   if (gps.baudLocked() && cfg.gpsBaud == 0) rtc.detectedBaud = gps.baud();
+  feedMotion();
+  updateGpsStandby();
   handleInput();
   nmeaserver::update();
   int devices = nmeaserver::deviceCount();

@@ -31,6 +31,8 @@ class GpsReader {
   // Satellites in view with signal strength, ordered by constellation; returns the count.
   int satellites(SatInfo* out, int max);
   uint32_t lastDataMs() const { return _lastDataMs; }
+  // Sends "$<body>*<checksum>\r\n" to the module, e.g. "PCAS12,15".
+  void sendCommand(const char* body);
   // Called with every received byte once the baud rate is known.
   void setRawSink(void (*sink)(char c)) { _rawSink = sink; }
 

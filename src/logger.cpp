@@ -32,11 +32,15 @@ static bool writeCsv(const LogPoint& p, const String& path) {
   bool isNew = !SD.exists(path);
   File f = SD.open(path, FILE_APPEND);
   if (!f) return false;
-  if (isNew) f.println("time_utc,latitude,longitude,altitude_m,speed_kmh,course_deg,satellites,hdop,battery_pct");
-  char t[24];
+  if (isNew)
+    f.println("time_utc,latitude,longitude,altitude_m,speed_kmh,course_deg,satellites,hdop,battery_pct,"
+              "accel_g,brake_g,lateral_g,up_g,down_g");
+  char t[24], acc[40] = ",,,,";
   isoTime(p, t, sizeof(t));
-  bool ok = f.printf("%s,%.7f,%.7f,%.1f,%.1f,%.1f,%u,%.2f,%d\n", t, p.lat, p.lon, p.altM, p.speedKmh,
-                     p.courseDeg, p.sats, p.hdop, p.batteryPct) > 0;
+  if (p.hasAccel)
+    snprintf(acc, sizeof(acc), "%.2f,%.2f,%.2f,%.2f,%.2f", p.accelG, p.brakeG, p.latG, p.upG, p.downG);
+  bool ok = f.printf("%s,%.7f,%.7f,%.1f,%.1f,%.1f,%u,%.2f,%d,%s\n", t, p.lat, p.lon, p.altM, p.speedKmh,
+                     p.courseDeg, p.sats, p.hdop, p.batteryPct, acc) > 0;
   f.close();
   return ok;
 }

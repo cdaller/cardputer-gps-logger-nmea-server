@@ -90,6 +90,10 @@ bool configLoad(Config& cfg) {
     else if (key == "ap_ssid" && val.length()) cfg.apSsid = val;
     else if (key == "ap_pass") cfg.apPass = val;
     else if (key == "nmea_port" && n >= 1 && n <= 65535) cfg.nmeaPort = n;
+    else if (key == "gps_standby") cfg.gpsStandby = n != 0;
+    else if (key == "imu_up") sscanf(val.c_str(), "%f,%f,%f", &cfg.imuUp[0], &cfg.imuUp[1], &cfg.imuUp[2]);
+    else if (key == "imu_fwd") sscanf(val.c_str(), "%f,%f,%f", &cfg.imuFwd[0], &cfg.imuFwd[1], &cfg.imuFwd[2]);
+    else if (key == "imu_fwd_learned") cfg.imuFwdLearned = n != 0;
   }
   f.close();
   return true;
@@ -137,6 +141,12 @@ bool configSave(const Config& cfg) {
   f.printf("ap_ssid=%s\n", cfg.apSsid.c_str());
   f.printf("ap_pass=%s\n", cfg.apPass.c_str());
   f.printf("nmea_port=%u\n", cfg.nmeaPort);
+  f.println("# 1 = GPS module to standby while the accelerometer sees no motion (Cardputer ADV)");
+  f.printf("gps_standby=%d\n", cfg.gpsStandby ? 1 : 0);
+  f.println("# accelerometer calibration, set on the acceleration page");
+  f.printf("imu_up=%.4f,%.4f,%.4f\n", cfg.imuUp[0], cfg.imuUp[1], cfg.imuUp[2]);
+  f.printf("imu_fwd=%.4f,%.4f,%.4f\n", cfg.imuFwd[0], cfg.imuFwd[1], cfg.imuFwd[2]);
+  f.printf("imu_fwd_learned=%d\n", cfg.imuFwdLearned ? 1 : 0);
 
   SD.mkdir("/gpslogger");
   File out = SD.open(CONFIG_TMP_PATH, FILE_WRITE);
