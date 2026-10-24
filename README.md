@@ -35,8 +35,11 @@ Cardputer v1.x).
 - Menu page: start/stop logging, start/stop NMEA server, settings, tracks, help, screen off /
   deep sleep - no need to remember key letters
 - Tracks page: all track files on the SD card with type and size, newest first; delete them,
-  show start / end time, duration, distance and altitude profile, or draw the track as a map
-  colored by altitude (CSV and GPX files)
+  show distance, duration, altitude range, max speed, start / end time and altitude profile,
+  or draw the track as a map (CSV and GPX files). Map and profile are colored by altitude or
+  speed, switched with `C`
+- Current track page: info or map (`I` / `M`) of the track being recorded, like on the
+  tracks page, updated every 5 s
 - Logging to `/gpslogger/tracks/YYYYMMDD_HHMMSS.csv` / `.gpx` (UTC time stamps).
   The GPX file is closed after every point, so it stays valid if power is lost.
 - Optional raw NMEA log (`.nmea` next to the track): all sentences from the GPS,
@@ -129,8 +132,9 @@ to the `creator` attribute of GPX files.
 | Key (keyboard)     | Action                                  |
 |--------------------|-----------------------------------------|
 | `Enter` / `R`      | start / stop logging                    |
-| `Tab`, `/` , `,`   | switch page: position -> big -> details -> satellites -> signal -> g-g -> accel chart -> WiFi -> menu (WiFi only with NMEA server on, g-g / chart only with accelerometer) |
-| `1` ... `9`        | jump to page: 1 position, 2 big, 3 details, 4 satellites, 5 signal, 6 g-g, 7 accel chart, 8 WiFi, 9 menu |
+| `Tab`, `/` , `,`   | switch page: position -> big -> details -> satellites -> signal -> current track -> g-g -> accel chart -> WiFi -> menu (WiFi only with NMEA server on, g-g / chart only with accelerometer) |
+| `1` ... `9`, `0`   | jump to page: 1 position, 2 big, 3 details, 4 satellites, 5 signal, 6 current track, 7 g-g, 8 accel chart, 9 WiFi, 0 menu |
+| `I` / `M` / `C`    | current track and track pages: info / map / colors by altitude or speed |
 | `C` / `X`          | acceleration pages: calibrate (standing still) / reset max values |
 | `;` `.` + `Enter`  | menu page: select item (up/down arrow keys) and run it |
 | `S`                | settings (`;` `.` select, `,` `/` change, `` ` `` / `Del` save & exit) |
@@ -166,6 +170,7 @@ tz_offset=0               # added to UTC for the display: hours or hours:minutes
 auto_start=0              # start logging after power on
 brightness=128
 rec_led=1                 # 1 = RGB LED pulses red once a minute while logging
+map_color=altitude        # altitude | speed: colors of track map and profile
 nmea_server=0             # 1 = send NMEA over WiFi
 wifi_mode=ap              # ap = own network, client = join wifi_ssid
 wifi_ssid=

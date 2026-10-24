@@ -84,8 +84,8 @@ struct RtcState {
 RTC_DATA_ATTR RtcState rtc;
 
 enum Page {
-  PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_GG, PAGE_ACCEL, PAGE_WIFI, PAGE_MENU,
-  PAGE_SETTINGS, PAGE_HELP, PAGE_TRACKS, PAGE_TRACK_INFO, PAGE_TRACK_MAP
+  PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_LIVE, PAGE_GG, PAGE_ACCEL, PAGE_WIFI,
+  PAGE_MENU, PAGE_SETTINGS, PAGE_HELP, PAGE_TRACKS, PAGE_TRACK_INFO, PAGE_TRACK_MAP
 };
 // MAIN .. MENU are switched with Tab / G0; WIFI only with the NMEA server on,
 // GG and ACCEL only with an accelerometer
@@ -116,6 +116,14 @@ static int trackSel = 0;
 static bool trackDeleteAsk = false;
 static int trackAction = -1;   // selection in the action popup, -1 = closed
 static tracks::Track track;    // loaded for the info and map pages
+// The track being logged, for its page: read again every LIVE_READ_MS while
+// the page is shown, only the new points.
+static const uint32_t LIVE_READ_MS = 5000;
+static tracks::Track liveTrack;
+static tracks::LoadState liveState;
+static char liveBase[48] = "";  // liveTrack is from this track
+static uint32_t livePoints = 0, liveReadMs = 0;
+static bool liveMap = true;     // map or info
 static uint32_t gpsStandbyMs = 0;     // when the standby command was sent, 0 = GPS on
 static uint32_t gpsStandbyEndMs = 0;  // when the GPS was taken as on again
 static bool gpsStandbyChecked = false;
@@ -1249,7 +1257,7 @@ static void drawHelpPage() {
   canvas.setTextDatum(top_left);
   const char* lines[] = {
     "Enter/R  start / stop logging",
-    "Tab ,/ 1-9  page (1 pos .. 9 menu)",
+    "Tab ,/ 1-9 0  page (1 pos .. 0 menu)",
     "S settings  T tracks  H help",
     "Z  screen off/sleep   P  screenshot",
     "G0 click: page  hold: rec",
@@ -1360,14 +1368,26 @@ static String dateTimeText(time_t utc) {
 }
 
 // Blue (low) - green - red (high), f from 0 to 1.
-static uint16_t altColor(float f) {
+static uint16_t rangeColor(float f) {
   f = constrain(f, 0.0f, 1.0f);
   if (f < 0.5f) return canvas.color565(0, f * 2 * 255, (1 - f * 2) * 255);
   return canvas.color565((f - 0.5f) * 2 * 255, (1 - (f - 0.5f) * 2) * 255, 0);
 }
 
-static float altFraction(float alt) {
-  return track.altMax > track.altMin ? (alt - track.altMin) / (track.altMax - track.altMin) : 0.5f;
+static float altFraction(const tracks::Track& t, float alt) {
+  return t.altMax > t.altMin ? (alt - t.altMin) / (t.altMax - t.altMin) : 0.5f;
+}
+
+// Color of a track point: by altitude or by speed (0 .. max), as selected with C.
+static uint16_t pointColor(const tracks::Track& t, const tracks::Point& p) {
+  if (cfg.mapSpeed) return rangeColor(t.spdMax > 0 ? p.speed / t.spdMax : 0);
+  return rangeColor(altFraction(t, p.alt));
+}
+
+static void toggleMapColor() {
+  cfg.mapSpeed = !cfg.mapSpeed;
+  if (sdOk) configSave(cfg);
+  showStatus(cfg.mapSpeed ? "Colors: speed" : "Colors: altitude");
 }
 
 enum TrackActionId { A_INFO, A_MAP, A_DELETE, A_COUNT };
@@ -1422,69 +1442,147 @@ static void drawTracksPage() {
   if (trackDeleteAsk) drawMessageBox(("Delete " + trackFiles[trackSel].name + "? Y / N").c_str());
 }
 
-static void drawTrackInfoPage() {
-  drawTitleBar(trackFiles[trackSel].name, "M map ` back");
-  drawLabeled(20, "Start", dateTimeText(track.start), TFT_WHITE);
-  drawLabeled(34, "End", dateTimeText(track.end), TFT_WHITE);
+// Large value with a small label in front, like on the position page; returns the right edge.
+static int drawTrackValue(int x, int y, const char* label, const String& value, uint16_t col) {
+  canvas.setFont(&fonts::Font0);
+  canvas.setTextColor(COL_LABEL);
+  canvas.drawString(label, x, y + 9);
+  x += canvas.textWidth(label) + 4;
+  canvas.setFont(&fonts::Font4);
+  canvas.setTextColor(col);
+  canvas.drawString(value, x, y);
+  return x + canvas.textWidth(value);
+}
+
+static void drawTrackInfo(const tracks::Track& t) {
   String duration = "--";
-  if (track.start && track.end >= track.start) {
-    uint32_t s = track.end - track.start;
+  if (t.start && t.end >= t.start) {
+    uint32_t s = t.end - t.start;
     char buf[16];
     if (s >= 3600) snprintf(buf, sizeof(buf), "%luh %02lum", (unsigned long)(s / 3600), (unsigned long)(s / 60 % 60));
     else snprintf(buf, sizeof(buf), "%lum %02lus", (unsigned long)(s / 60), (unsigned long)(s % 60));
     duration = buf;
   }
-  drawLabeled(48, "Duration", duration + "  (" + String(track.count) + " points)", TFT_CYAN);
-  drawLabeled(62, "Distance", String(track.distM / 1000, 2) + " km", TFT_CYAN);
-  drawLabeled(76, "Altitude", String(track.altMin, 0) + " - " + String(track.altMax, 0) + " m", COL_ALT);
+  String dist = String(t.distM / 1000, t.distM < 10000 ? 2 : 1) + " km";
+  drawTrackValue(3, 20, "DIST", dist, TFT_CYAN);
+  canvas.setTextDatum(top_right);
+  canvas.drawString(duration, 237, 20);
+  canvas.setTextDatum(top_left);
+
+  int x = drawTrackValue(3, 46, "ALT", String(t.altMin, 0) + "-" + String(t.altMax, 0) + " m", COL_ALT);
+  String spd = String(t.spdMax, 0) + " km/h";
+  canvas.setTextColor(TFT_GREEN);
+  canvas.setTextDatum(top_right);
+  canvas.drawString(spd, 237, 46);
+  canvas.setTextDatum(top_left);
+  int sx = 237 - canvas.textWidth(spd);
+  canvas.setFont(&fonts::Font0);
+  if (sx - 4 - canvas.textWidth("MAX") > x + 4) {  // label only if there is room
+    canvas.setTextColor(COL_LABEL);
+    canvas.drawString("MAX", sx - 4 - canvas.textWidth("MAX"), 55);
+  }
+
+  // Local start date and time - end time, points
+  String when = "--";
+  if (t.start) {
+    when = dateTimeText(t.start).substring(0, 16);
+    if (t.end) when += " - " + dateTimeText(t.end).substring(11, 16);
+  }
+  canvas.setFont(&fonts::Font2);
+  canvas.setTextColor(TFT_WHITE);
+  canvas.drawString(when, 3, 73);
+  canvas.setTextColor(COL_LABEL);
+  canvas.setTextDatum(top_right);
+  canvas.drawString(String(t.count) + " pts", 237, 73);
+  canvas.setTextDatum(top_left);
 
   // Altitude profile over the points, colored like the map
-  const int x0 = 3, w = 234, bottom = 133, h = 38;
+  const int x0 = 3, w = 234, bottom = 133, h = 40;
   canvas.drawFastHLine(x0, bottom, w, COL_BAR);
-  for (int x = 0; x < w; x++) {
-    float f = altFraction(track.pts[x * track.n / w].alt);
-    int hh = 1 + f * (h - 1);
-    canvas.drawFastVLine(x0 + x, bottom - hh, hh, altColor(f));
+  for (int i = 0; i < w; i++) {
+    const tracks::Point& p = t.pts[i * t.n / w];
+    int hh = 1 + altFraction(t, p.alt) * (h - 1);
+    canvas.drawFastVLine(x0 + i, bottom - hh, hh, pointColor(t, p));
   }
 }
 
-// Track points as lines, colored by altitude; north is up, equal scale in
-// both directions, fitted into the screen.
-static void drawTrackMapPage() {
-  drawTitleBar(trackFiles[trackSel].name, "I info ` back");
-  const int x0 = 4, y0 = 22, w = 232, h = 98;
-  float cosLat = cos((track.latMin + track.latMax) / 2 * DEG_TO_RAD);
-  float dx = (track.lonMax - track.lonMin) * cosLat, dy = track.latMax - track.latMin;
+// Track points as lines, colored by altitude or speed; north is up, equal
+// scale in both directions, fitted into the screen.
+static void drawTrackMap(const tracks::Track& t) {
+  const int x0 = 4, y0 = 21, w = 232, h = 95;
+  float cosLat = cos((t.latMin + t.latMax) / 2 * DEG_TO_RAD);
+  float dx = (t.lonMax - t.lonMin) * cosLat, dy = t.latMax - t.latMin;
   float scale = min(dx > 0 ? w / dx : INFINITY, dy > 0 ? h / dy : INFINITY);
   if (isinf(scale)) scale = 0;  // only one position
   float left = x0 + (w - dx * scale) / 2, base = y0 + (h + dy * scale) / 2;
-  auto px = [&](const tracks::Point& p) { return (int)(left + (p.lon - track.lonMin) * cosLat * scale); };
-  auto py = [&](const tracks::Point& p) { return (int)(base - (p.lat - track.latMin) * scale); };
-  for (int i = 1; i < track.n; i++) {
-    const tracks::Point &a = track.pts[i - 1], &b = track.pts[i];
-    canvas.drawLine(px(a), py(a), px(b), py(b), altColor(altFraction(b.alt)));
+  auto px = [&](const tracks::Point& p) { return (int)(left + (p.lon - t.lonMin) * cosLat * scale); };
+  auto py = [&](const tracks::Point& p) { return (int)(base - (p.lat - t.latMin) * scale); };
+  for (int i = 1; i < t.n; i++) {
+    const tracks::Point &a = t.pts[i - 1], &b = t.pts[i];
+    canvas.drawLine(px(a), py(a), px(b), py(b), pointColor(t, b));
   }
-  const tracks::Point &first = track.pts[0], &last = track.pts[track.n - 1];
+  const tracks::Point &first = t.pts[0], &last = t.pts[t.n - 1];
   canvas.fillCircle(px(first), py(first), 3, TFT_GREEN);
   canvas.drawCircle(px(last), py(last), 3, TFT_RED);
 
-  canvas.setFont(&fonts::Font0);
-  canvas.setTextColor(altColor(0));
-  String low = String(track.altMin, 0);
-  canvas.drawString(low, 3, 126);
+  // Color legend: low - high
+  canvas.setFont(&fonts::Font2);
+  String low = cfg.mapSpeed ? String("0") : String(t.altMin, 0);
+  String high = cfg.mapSpeed ? String(t.spdMax, 0) + " km/h" : String(t.altMax, 0) + " m";
+  canvas.setTextColor(rangeColor(0));
+  canvas.drawString(low, 3, 119);
   int x = 3 + canvas.textWidth(low);
   canvas.setTextColor(COL_LABEL);
-  canvas.drawString(" - ", x, 126);
+  canvas.drawString(" - ", x, 119);
   x += canvas.textWidth(" - ");
-  canvas.setTextColor(altColor(1));
-  canvas.drawString(String(track.altMax, 0) + " m", x, 126);
+  canvas.setTextColor(rangeColor(1));
+  canvas.drawString(high, x, 119);
   if (scale > 0) {  // width of the map area, 1 degree latitude = 111.32 km
     float km = w / scale * 111.32f;
     canvas.setTextColor(COL_LABEL);
     canvas.setTextDatum(top_right);
-    canvas.drawString("width " + (km < 1 ? String(km * 1000, 0) + " m" : String(km, 1) + " km"), 237, 126);
+    canvas.drawString("width " + (km < 1 ? String(km * 1000, 0) + " m" : String(km, 1) + " km"), 237, 119);
     canvas.setTextDatum(top_left);
   }
+}
+
+static void drawTrackInfoPage() {
+  drawTitleBar(trackFiles[trackSel].name, "C color M map");
+  drawTrackInfo(track);
+}
+
+static void drawTrackMapPage() {
+  drawTitleBar(trackFiles[trackSel].name, "C color I info");
+  drawTrackMap(track);
+}
+
+// Reads the points logged since the last time: from the CSV if written (it has
+// the speed), else from the GPX.
+static void updateLiveTrack() {
+  if (!rtc.logging || !rtc.baseName[0] || !sdOk) return;
+  if (strcmp(liveBase, rtc.baseName) != 0) {  // new track
+    memset(&liveTrack, 0, sizeof(liveTrack));
+    liveState = {};
+    strlcpy(liveBase, rtc.baseName, sizeof(liveBase));
+    livePoints = 0;
+  }
+  if (rtc.points == livePoints || (livePoints && millis() - liveReadMs < LIVE_READ_MS)) return;
+  bool gpx = cfg.logFormat == LOG_GPX;
+  tracks::FileInfo f = {String(strrchr(rtc.baseName, '/') + 1) + (gpx ? ".gpx" : ".csv"),
+                        (uint8_t)(gpx ? tracks::TYPE_GPX : tracks::TYPE_CSV), 0};
+  tracks::loadMore(f, liveTrack, liveState);
+  livePoints = rtc.points;
+  liveReadMs = millis();
+}
+
+static void drawLivePage() {
+  drawTitleBar("CURRENT TRACK", liveMap ? "C color I info" : "C color M map");
+  canvas.setFont(&fonts::Font2);
+  canvas.setTextColor(COL_LABEL);
+  if (!rtc.logging) canvas.drawString("Not logging - Enter starts", 3, 22);
+  else if (!liveTrack.count || strcmp(liveBase, rtc.baseName) != 0) canvas.drawString("No points yet", 3, 22);
+  else if (liveMap) drawTrackMap(liveTrack);
+  else drawTrackInfo(liveTrack);
 }
 
 static void draw() {
@@ -1498,6 +1596,8 @@ static void draw() {
     drawTrackInfoPage();
   } else if (page == PAGE_TRACK_MAP) {
     drawTrackMapPage();
+  } else if (page == PAGE_LIVE) {
+    drawLivePage();
   } else {
     drawStatusBar();
     if (page == PAGE_MAIN) drawMainPage();
@@ -1760,7 +1860,8 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     return;
   }
   if (page == PAGE_TRACK_INFO || page == PAGE_TRACK_MAP) {
-    if (c == 'i') page = PAGE_TRACK_INFO;
+    if (c == 'c') toggleMapColor();
+    else if (c == 'i') page = PAGE_TRACK_INFO;
     else if (c == 'm') page = PAGE_TRACK_MAP;
     else if (c == '`' || del || enter) page = PAGE_TRACKS;
     return;
@@ -1782,8 +1883,12 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     }
     if (c == 'x') { motion::resetMax(); showStatus("Max values reset"); return; }
   }
-  if (c >= '1' && c < '1' + PAGE_CYCLE_COUNT) {  // pages in cycle order
-    Page p = (Page)(c - '1');
+  if (page == PAGE_LIVE) {
+    if (c == 'c') { toggleMapColor(); return; }
+    if (c == 'i' || c == 'm') { liveMap = c == 'm'; return; }
+  }
+  if (isdigit(c)) {  // pages in cycle order: 1 .. 9, 0
+    Page p = (Page)(c == '0' ? 9 : c - '1');
     if (p == PAGE_WIFI && !cfg.nmeaServer) showStatus("NMEA server is off");
     else if (!pageAvailable(p)) showStatus("No accelerometer");
     else page = p;
@@ -1998,6 +2103,7 @@ void loop() {
 
   if (screenOn && now - lastDrawMs > 200) {
     lastDrawMs = now;
+    if (page == PAGE_LIVE) updateLiveTrack();
     draw();
   }
   delay(5);

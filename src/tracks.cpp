@@ -54,7 +54,9 @@ static time_t parseTime(const char* s) {
 static bool parseCsv(const char* line, Point& p, time_t& time) {
   double lat, lon;
   const char* comma = strchr(line, ',');
-  if (!comma || sscanf(comma + 1, "%lf,%lf,%f", &lat, &lon, &p.alt) != 3) return false;  // header
+  int n = comma ? sscanf(comma + 1, "%lf,%lf,%f,%f", &lat, &lon, &p.alt, &p.speed) : 0;
+  if (n < 3) return false;  // header
+  if (n < 4) p.speed = 0;
   p.lat = lat;
   p.lon = lon;
   time = parseTime(line);
@@ -73,6 +75,7 @@ static bool parseGpx(const char* line, Point& p, time_t& time) {
   p.alt = ele ? atof(ele + 5) : 0;
   const char* t = strstr(pt, "<time>");
   time = t ? parseTime(t + 6) : 0;
+  p.speed = 0;  // set by the caller
   return true;
 }
 
@@ -95,6 +98,7 @@ static void addPoint(Track& t, const Point& p, time_t time, uint32_t& stride) {
   }
   t.altMin = min(t.altMin, p.alt);
   t.altMax = max(t.altMax, p.alt);
+  t.spdMax = max(t.spdMax, p.speed);
   t.latMin = min(t.latMin, p.lat);
   t.latMax = max(t.latMax, p.lat);
   t.lonMin = min(t.lonMin, p.lon);
@@ -113,12 +117,20 @@ static void addPoint(Track& t, const Point& p, time_t time, uint32_t& stride) {
 }
 
 bool load(const FileInfo& f, Track& t) {
+  memset(&t, 0, sizeof(t));
+  LoadState st = {};
+  return loadMore(f, t, st);
+}
+
+// Reading goes on after the last point line: the logger rewrites the GPX
+// footer behind it with each new point.
+bool loadMore(const FileInfo& f, Track& t, LoadState& st) {
   if (f.type == TYPE_NMEA) return false;
   File file = SD.open(path(f));
   if (!file) return false;
-  memset(&t, 0, sizeof(t));
-  uint32_t stride = 1;
-  Point prev;
+  if (!st.stride) st.stride = 1;
+  file.seek(st.pos);
+  uint32_t at = st.pos;  // file position of the next byte
   static uint8_t buf[512];
   char line[256];
   size_t len = 0;
@@ -128,12 +140,19 @@ bool load(const FileInfo& f, Track& t) {
     Point p;
     time_t time;
     if (!(f.type == TYPE_CSV ? parseCsv(line, p, time) : parseGpx(line, p, time))) return;
-    if (t.count) t.distM += distanceM(prev, p);
-    prev = p;
-    addPoint(t, p, time, stride);
+    if (t.count) {
+      double d = distanceM(st.prev, p);
+      t.distM += d;
+      if (f.type == TYPE_GPX && time > st.prevTime && st.prevTime) p.speed = d / (time - st.prevTime) * 3.6;
+    }
+    st.prev = p;
+    st.prevTime = time;
+    st.pos = at;
+    addPoint(t, p, time, st.stride);
   };
   for (int n; (n = file.read(buf, sizeof(buf))) > 0;) {
     for (int i = 0; i < n; i++) {
+      at++;
       if (buf[i] == '\n') parseLine();
       else if (len < sizeof(line) - 1) line[len++] = buf[i];  // longer lines are cut off
     }
