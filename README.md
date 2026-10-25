@@ -224,10 +224,13 @@ to all TCP clients connected to `nmea_port` (up to 4) and as UDP broadcast to th
   The Cardputer has the address `192.168.4.1`.
 - **Existing network** (`wifi_mode=client`): the Cardputer scans for the networks
   `wifi_ssid`, `wifi_ssid2` and `wifi_ssid3` and joins the one with the strongest signal;
-  its address is shown on the WiFi page. If none of them can be joined within 30 seconds,
-  it opens its own network instead (as with `wifi_mode=ap`, shown as *fallback* on the WiFi
+  its address is shown on the WiFi page. If that fails, it tries the next one; networks
+  missing in the scan are tried too (hidden networks). If none of them can be joined after
+  trying all (at least 30 seconds), it opens its own network instead (as with `wifi_mode=ap`, shown as *fallback* on the WiFi
   page). It stays there until the server is restarted (menu or settings). A lost connection
-  starts a new search, so it may switch to another known network.
+  starts a new search, so it may switch to another known network. Each failed attempt is
+  shown in the status line with the reason, e.g. `MyWiFi: wrong password?`. The Cardputer
+  only supports 2.4 GHz networks.
 
 The NMEA sentences contain your position: every device that can reach the port gets it,
 and in client mode the UDP broadcast sends it to every device in that network. Use the own

@@ -126,6 +126,7 @@ static int settingsSel = 0;
 static bool editing = false;   // text input for the selected setting
 static String editBuf;
 static int lastDeviceCount = 0;
+static uint32_t lastWifiFailures = 0;
 static Config cfgBeforeEdit;
 static int sdErrors = 0;       // failed point writes in a row
 static std::vector<tracks::FileInfo> trackFiles;
@@ -2411,6 +2412,10 @@ void loop() {
     showStatus(devices > lastDeviceCount ? ("Device connected (" + String(devices) + ")").c_str()
                                          : ("Device disconnected (" + String(devices) + ")").c_str());
     lastDeviceCount = devices;
+  }
+  if (nmeaserver::failureCount() != lastWifiFailures) {
+    lastWifiFailures = nmeaserver::failureCount();
+    showStatus(nmeaserver::lastFailure().c_str(), 5000);
   }
 
   uint32_t now = millis();

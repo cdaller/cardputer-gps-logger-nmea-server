@@ -193,7 +193,7 @@ String configText(const Config& cfg) {
   f.println("# 1 = send the GPS NMEA sentences over WiFi (TCP server + UDP broadcast)");
   f.printf("nmea_server=%d\n", cfg.nmeaServer ? 1 : 0);
   f.println("# ap = own WiFi network (ap_ssid/ap_pass), client = join the strongest of up to three");
-  f.println("# networks (wifi_ssid/wifi_pass, ...2, ...3); none found within 30 s: own network instead");
+  f.println("# networks (wifi_ssid/wifi_pass, ...2, ...3); none joined after trying all: own network");
   f.printf("wifi_mode=%s\n", cfg.wifiClient ? "client" : "ap");
   for (int i = 0; i < WIFI_NETWORKS; i++) {
     f.printf("%s=%s\n", wifiKey("wifi_ssid", i).c_str(), cfg.wifiSsid[i].c_str());

@@ -15,6 +15,10 @@ void put(char c);   // raw GPS bytes; each complete sentence is sent
 String statusText();  // one line: address, port, counts or the WiFi state
 String stateText();   // off, running (AP), searching..., connecting..., connected, ...
 String networkName(); // own AP name or the network joined / being joined
+// Last failed attempt to join a known network ("name: reason") and the number
+// of failed attempts so far, to show each one.
+String lastFailure();
+uint32_t failureCount();
 String ipText();      // own address, empty while the network is not up
 bool running();
 bool apActive();    // own access point, configured or as fallback
