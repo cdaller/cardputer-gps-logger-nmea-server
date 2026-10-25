@@ -1,6 +1,7 @@
 # PlatformIO post-build script:
 #  dist/GPS-NMEA-Logger.bin       app image -> copy to SD card and install with the Launcher
 #  dist/GPS-NMEA-Logger-full.bin  merged image (bootloader + partitions + app) for flashing at 0x0
+# Other environments (e.g. testled) are named after the environment.
 import os
 import shutil
 
@@ -12,9 +13,10 @@ def make_dist(source, target, env):
     project_dir = env.subst("$PROJECT_DIR")
     dist = os.path.join(project_dir, "dist")
     os.makedirs(dist, exist_ok=True)
+    name = "GPS-NMEA-Logger" if env["PIOENV"] == "cardputer" else env["PIOENV"]
 
     app_bin = os.path.join(build_dir, "firmware.bin")
-    shutil.copyfile(app_bin, os.path.join(dist, "GPS-NMEA-Logger.bin"))
+    shutil.copyfile(app_bin, os.path.join(dist, name + ".bin"))
 
     images = []
     for offset, path in env.get("FLASH_EXTRA_IMAGES", []):
@@ -24,7 +26,7 @@ def make_dist(source, target, env):
     cmd = " ".join([
         '"$PYTHONEXE"', '"$OBJCOPY"',
         "--chip", env.BoardConfig().get("build.mcu"),
-        "merge_bin", "-o", '"%s"' % os.path.join(dist, "GPS-NMEA-Logger-full.bin"),
+        "merge_bin", "-o", '"%s"' % os.path.join(dist, name + "-full.bin"),
         # dio: what PlatformIO itself flashes for qio boards
         "--flash_mode", "dio",
         "--flash_size", env.BoardConfig().get("upload.flash_size", "8MB"),

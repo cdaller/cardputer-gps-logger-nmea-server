@@ -25,6 +25,7 @@
 static const gpio_num_t PIN_BACKLIGHT = GPIO_NUM_38;
 static const gpio_num_t PIN_WAKE_BTN = GPIO_NUM_0;  // G0 / BtnA on Cardputer and ADV
 static const int PIN_BATTERY = 10;
+static const uint8_t PIN_RGB_LED = 21;              // WS2812 on Cardputer and ADV
 static const int PIN_ADV_LORA_CS = 5;               // SX1262 on CAP LoRa-1262 shares the SD SPI bus
 static const uint8_t TCA8418_ADDR = 0x34;           // ADV keyboard controller
 
@@ -61,6 +62,7 @@ static const uint32_t STANDBY_AFTER_STILL_MS = 30000;
 static const uint16_t GPS_STANDBY_SEC = 15;
 static const uint32_t STANDBY_CHECK_MS = 3500;
 // Recording LED: fades in and out (LED_FADE_MS each) once every LED_PERIOD_MS while logging.
+// Cardputer ADV: the LED only has power while the backlight pin is fully on (see updateRecLed).
 static const uint32_t LED_PERIOD_MS = 60000;
 static const uint32_t LED_FADE_MS = 1000;
 static const uint8_t LED_MAX = 160;  // of 255, red
@@ -412,7 +414,7 @@ static void updateGpsStandby() {
   if (displayActive) {  // M5 is set up: not in a quiet wake-up
     M5.Display.setBrightness(0);
     M5.Display.sleep();
-    M5.Led.setAllColor(0, 0, 0);  // may be in the middle of a pulse
+    neopixelWrite(PIN_RGB_LED, 0, 0, 0);  // may be in the middle of a pulse
   }
   // Keep the backlight off while sleeping and during quiet timer wake-ups.
   gpio_reset_pin(PIN_BACKLIGHT);
@@ -2330,9 +2332,6 @@ void setup() {
 
   auto m5cfg = M5.config();
   M5Cardputer.begin(m5cfg, false);
-  // M5Unified scales LED values by (brightness / 256)^2 with a default of 63:
-  // LED_MAX 160 would arrive as 10. Full brightness passes the levels unchanged.
-  M5.Led.setBrightness(255);
   rtc.isAdv = M5.getBoard() == m5::board_t::board_M5CardputerADV;
   hasKeyboard = detectKeyboard();
   if (hasKeyboard) M5Cardputer.Keyboard.begin();
@@ -2384,19 +2383,30 @@ static void feedMotion() {
 
 // Red pulse while logging, brightness squared for an even looking fade.
 // Not in deep sleep: the quiet wake-ups don't use the LED.
+// Driven with the core's neopixelWrite: M5.Led fails to start on the ADV.
+// Cardputer ADV: GPIO 38 switches both the backlight and the LED's power, and
+// M5GFX dims the backlight with PWM, which cuts the LED's power every period.
+// So the backlight goes to 100 % for the pulse, also while the screen is off.
 static void updateRecLed() {
   static uint8_t shown = 0;
+  static bool boosted = false;
   uint8_t level = 0;
+  bool pulse = false;
   if (rtc.logging && cfg.recLed) {
     uint32_t t = (millis() - ledStartMs) % LED_PERIOD_MS;
     if (t < 2 * LED_FADE_MS) {
+      pulse = true;
       float f = (t < LED_FADE_MS ? t : 2 * LED_FADE_MS - t) / (float)LED_FADE_MS;
       level = f * f * LED_MAX;
     }
   }
+  if (rtc.isAdv && pulse != boosted) {
+    boosted = pulse;
+    M5.Display.setBrightness(pulse ? 255 : screenOn ? cfg.brightness : 0);
+  }
   if (level == shown) return;
   shown = level;
-  M5.Led.setAllColor(level, 0, 0);
+  neopixelWrite(PIN_RGB_LED, level, 0, 0);
 }
 
 void loop() {

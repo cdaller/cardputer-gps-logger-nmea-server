@@ -54,7 +54,9 @@ Cardputer v1.x).
   recorded. See [Log modes](#log-modes)
 - Configurable format, time zone (with automatic daylight saving), brightness, timeouts
 - RGB LED fades in and out red once a minute while logging (`rec_led`, default on; not
-  during deep sleep)
+  during deep sleep). On the Cardputer ADV the LED only has power while the display
+  backlight is fully on, so the backlight goes to full brightness for the 2 s of each
+  pulse, also while the screen is off
 - Deep sleep between points while logging (time mode, interval >= 15 s)
 - GPS standby while the accelerometer sees no motion (Cardputer ADV), see
   [GPS standby](#gps-standby)
