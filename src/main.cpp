@@ -2330,6 +2330,9 @@ void setup() {
 
   auto m5cfg = M5.config();
   M5Cardputer.begin(m5cfg, false);
+  // M5Unified scales LED values by (brightness / 256)^2 with a default of 63:
+  // LED_MAX 160 would arrive as 10. Full brightness passes the levels unchanged.
+  M5.Led.setBrightness(255);
   rtc.isAdv = M5.getBoard() == m5::board_t::board_M5CardputerADV;
   hasKeyboard = detectKeyboard();
   if (hasKeyboard) M5Cardputer.Keyboard.begin();
