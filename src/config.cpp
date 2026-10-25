@@ -74,6 +74,11 @@ int16_t tzOffsetAt(const Config& cfg, time_t utc) {
   return utc >= start && utc < end ? base + 60 : base;
 }
 
+// wifi_ssid, wifi_ssid2, wifi_ssid3: the first one without number, as before
+static String wifiKey(const char* base, int slot) {
+  return slot ? String(base) + String(slot + 1) : String(base);
+}
+
 // "2", "-3.5" (hours) or "+5:45", "-3:30" (hours:minutes)
 static long parseTzMinutes(const String& val) {
   int colon = val.indexOf(':');
@@ -82,10 +87,7 @@ static long parseTzMinutes(const String& val) {
   return val.startsWith("-") ? -m : m;
 }
 
-bool configLoad(Config& cfg) {
-  File f = SD.open(CONFIG_PATH, FILE_READ);
-  if (!f) f = SD.open(CONFIG_TMP_PATH, FILE_READ);  // power lost between remove and rename
-  if (!f) return false;
+void configParse(Config& cfg, Stream& f) {
   while (f.available()) {
     String line = f.readStringUntil('\n');
     line.trim();
@@ -126,9 +128,12 @@ bool configLoad(Config& cfg) {
     else if (key == "map_color") cfg.mapSpeed = val.equalsIgnoreCase("speed");
     else if (key == "nmea_server") cfg.nmeaServer = n != 0;
     else if (key == "wifi_mode") cfg.wifiClient = val.equalsIgnoreCase("client");
-    else if (key == "wifi_ssid") cfg.wifiSsid = val;
-    else if (key == "wifi_pass") cfg.wifiPass = val;
-    else if (key == "ap_ssid" && val.length()) cfg.apSsid = val;
+    else if (key.startsWith("wifi_")) {
+      for (int i = 0; i < WIFI_NETWORKS; i++) {
+        if (key == wifiKey("wifi_ssid", i)) cfg.wifiSsid[i] = val;
+        else if (key == wifiKey("wifi_pass", i)) cfg.wifiPass[i] = val;
+      }
+    } else if (key == "ap_ssid" && val.length()) cfg.apSsid = val;
     else if (key == "ap_pass") cfg.apPass = val;
     else if (key == "nmea_port" && n >= 1 && n <= 65535) cfg.nmeaPort = n;
     else if (key == "gps_standby") cfg.gpsStandby = n != 0;
@@ -136,11 +141,18 @@ bool configLoad(Config& cfg) {
     else if (key == "imu_fwd") sscanf(val.c_str(), "%f,%f,%f", &cfg.imuFwd[0], &cfg.imuFwd[1], &cfg.imuFwd[2]);
     else if (key == "imu_fwd_learned") cfg.imuFwdLearned = n != 0;
   }
+}
+
+bool configLoad(Config& cfg) {
+  File f = SD.open(CONFIG_PATH, FILE_READ);
+  if (!f) f = SD.open(CONFIG_TMP_PATH, FILE_READ);  // power lost between remove and rename
+  if (!f) return false;
+  configParse(cfg, f);
   f.close();
   return true;
 }
 
-bool configSave(const Config& cfg) {
+String configText(const Config& cfg) {
   StreamString f;
   f.println("# GPS Logger configuration (edit on PC or in the app)");
   f.println("# gps_module: cap_lora1262 | unit_gps_v11 | unit_gps_at6558 | grove_nmea | custom");
@@ -180,10 +192,13 @@ bool configSave(const Config& cfg) {
   f.printf("map_color=%s\n", cfg.mapSpeed ? "speed" : "altitude");
   f.println("# 1 = send the GPS NMEA sentences over WiFi (TCP server + UDP broadcast)");
   f.printf("nmea_server=%d\n", cfg.nmeaServer ? 1 : 0);
-  f.println("# ap = own WiFi network (ap_ssid/ap_pass), client = join wifi_ssid/wifi_pass");
+  f.println("# ap = own WiFi network (ap_ssid/ap_pass), client = join the strongest of up to three");
+  f.println("# networks (wifi_ssid/wifi_pass, ...2, ...3); none found within 30 s: own network instead");
   f.printf("wifi_mode=%s\n", cfg.wifiClient ? "client" : "ap");
-  f.printf("wifi_ssid=%s\n", cfg.wifiSsid.c_str());
-  f.printf("wifi_pass=%s\n", cfg.wifiPass.c_str());
+  for (int i = 0; i < WIFI_NETWORKS; i++) {
+    f.printf("%s=%s\n", wifiKey("wifi_ssid", i).c_str(), cfg.wifiSsid[i].c_str());
+    f.printf("%s=%s\n", wifiKey("wifi_pass", i).c_str(), cfg.wifiPass[i].c_str());
+  }
   f.println("# ap_pass: empty = open network, otherwise at least 8 characters");
   f.printf("ap_ssid=%s\n", cfg.apSsid.c_str());
   f.printf("ap_pass=%s\n", cfg.apPass.c_str());
@@ -194,7 +209,11 @@ bool configSave(const Config& cfg) {
   f.printf("imu_up=%.4f,%.4f,%.4f\n", cfg.imuUp[0], cfg.imuUp[1], cfg.imuUp[2]);
   f.printf("imu_fwd=%.4f,%.4f,%.4f\n", cfg.imuFwd[0], cfg.imuFwd[1], cfg.imuFwd[2]);
   f.printf("imu_fwd_learned=%d\n", cfg.imuFwdLearned ? 1 : 0);
+  return f;
+}
 
+bool configSave(const Config& cfg) {
+  String f = configText(cfg);
   SD.mkdir("/gpslogger");
   File out = SD.open(CONFIG_TMP_PATH, FILE_WRITE);
   if (!out) return false;

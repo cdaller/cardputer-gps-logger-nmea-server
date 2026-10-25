@@ -7,6 +7,8 @@
 static const int MAX_CLIENTS = 4;
 static const uint32_t TCP_FLUSH_GAP_MS = 20;     // pause that ends a GPS burst
 static const uint32_t TCP_STALL_DROP_MS = 5000;  // client not reading for this long is dropped
+static const uint32_t WIFI_FALLBACK_MS = 30000;  // no known network joined: own AP instead
+static const uint32_t WIFI_CONNECT_MS = 10000;   // one connect attempt, then scan again
 
 static WiFiServer server;
 static WiFiClient clients[MAX_CLIENTS];
@@ -19,25 +21,106 @@ static size_t tcpLen = 0;
 static uint32_t lastLineMs = 0;
 static WiFiUDP udp;
 static bool isRunning = false;
-static bool apMode = false;
+static bool apMode = false;     // own AP: configured or as fallback in client mode
 static bool apStarted = false;  // softAP() refuses e.g. a password shorter than 8 characters
+static bool fallbackAp = false;
+// Client mode: scan, join the strongest known network, scan again if that fails.
+enum WifiState : uint8_t { W_SCAN, W_CONNECT, W_CONNECTED, W_AP };
+static WifiState wifiState = W_AP;
+static uint32_t searchStartMs = 0;   // no network since
+static uint32_t connectStartMs = 0;
+static String joinSsid;              // network joined or being joined
+static Config netCfg;
 static uint16_t port = 0;
 static char line[128];
 static size_t lineLen = 0;
+
+static void startAp() {
+  WiFi.mode(WIFI_AP);
+  apStarted = WiFi.softAP(netCfg.apSsid.c_str(), netCfg.apPass.length() ? netCfg.apPass.c_str() : nullptr);
+  apMode = true;
+  wifiState = W_AP;
+}
+
+static void startScan() {
+  joinSsid = "";
+  WiFi.scanNetworks(true);
+  wifiState = W_SCAN;
+}
+
+// Next scan, or the own AP once the search takes too long.
+static void searchOn() {
+  if (millis() - searchStartMs < WIFI_FALLBACK_MS) {
+    startScan();
+  } else {
+    fallbackAp = true;
+    startAp();
+  }
+}
+
+// Joins the strongest access point with a known name.
+static void joinStrongest(int found) {
+  int best = -1, bestSlot = 0;
+  for (int i = 0; i < found; i++) {
+    if (best >= 0 && WiFi.RSSI(i) <= WiFi.RSSI(best)) continue;
+    for (int k = 0; k < WIFI_NETWORKS; k++) {
+      if (netCfg.wifiSsid[k].length() && WiFi.SSID(i) == netCfg.wifiSsid[k]) {
+        best = i;
+        bestSlot = k;
+        break;
+      }
+    }
+  }
+  if (best >= 0) {
+    joinSsid = netCfg.wifiSsid[bestSlot];
+    WiFi.begin(joinSsid.c_str(), netCfg.wifiPass[bestSlot].c_str(), WiFi.channel(best), WiFi.BSSID(best));
+    connectStartMs = millis();
+    wifiState = W_CONNECT;
+  }
+  WiFi.scanDelete();
+  if (best < 0) searchOn();
+}
+
+static void updateWifi() {
+  switch (wifiState) {
+    case W_SCAN: {
+      int n = WiFi.scanComplete();
+      if (n != WIFI_SCAN_RUNNING) joinStrongest(n);  // n < 0: scan failed, nothing found
+      break;
+    }
+    case W_CONNECT:
+      if (WiFi.status() == WL_CONNECTED) wifiState = W_CONNECTED;
+      else if (millis() - connectStartMs >= WIFI_CONNECT_MS) {
+        WiFi.disconnect();
+        searchOn();
+      }
+      break;
+    case W_CONNECTED:
+      if (WiFi.status() != WL_CONNECTED) {  // lost: maybe another known network is in range
+        WiFi.disconnect();
+        searchStartMs = millis();
+        startScan();
+      }
+      break;
+    case W_AP:
+      break;
+  }
+}
 
 namespace nmeaserver {
 
 void begin(const Config& cfg) {
   end();
-  apMode = !cfg.wifiClient;
+  netCfg = cfg;
   port = cfg.nmeaPort;
-  if (apMode) {
-    WiFi.mode(WIFI_AP);
-    apStarted = WiFi.softAP(cfg.apSsid.c_str(), cfg.apPass.length() ? cfg.apPass.c_str() : nullptr);
-  } else {
+  apMode = apStarted = fallbackAp = false;
+  if (cfg.wifiClient) {
     WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(true);
-    WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPass.c_str());
+    WiFi.setAutoReconnect(false);  // reconnects with a new scan instead
+    searchStartMs = millis();
+    startScan();
+  } else {
+    startAp();
   }
   server.begin(port);
   server.setNoDelay(true);
@@ -57,6 +140,7 @@ void end() {
   server.end();
   web::end();
   udp.stop();
+  WiFi.scanDelete();
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   isRunning = false;
@@ -102,6 +186,7 @@ static bool checkAlive(WiFiClient& c) {
 
 void update() {
   if (!isRunning) return;
+  updateWifi();
   web::update();
   for (int i = 0; i < MAX_CLIENTS; i++) {
     if (alive[i] && !checkAlive(clients[i])) drop(i);
@@ -152,16 +237,24 @@ int apStations() { return isRunning && apMode ? WiFi.softAPgetStationNum() : 0; 
 
 bool running() { return isRunning; }
 
+bool apActive() { return isRunning && apMode; }
+
+bool apFallback() { return isRunning && fallbackAp; }
+
+String networkName() {
+  if (!isRunning) return "";
+  return apMode ? netCfg.apSsid : joinSsid;
+}
+
 bool networkUp() { return isRunning && (apMode ? apStarted : WiFi.status() == WL_CONNECTED); }
 
 String stateText() {
   if (!isRunning) return "off";
-  if (apMode) return apStarted ? "running" : "AP start failed";
-  switch (WiFi.status()) {
-    case WL_CONNECTED: return "connected";
-    case WL_NO_SSID_AVAIL: return "network not found";
-    case WL_CONNECT_FAILED: return "connect failed";
-    default: return "connecting...";
+  if (apMode) return !apStarted ? "AP start failed" : fallbackAp ? "no network: own AP" : "running";
+  switch (wifiState) {
+    case W_SCAN: return "searching...";
+    case W_CONNECT: return "connecting...";
+    default: return "connected";
   }
 }
 

@@ -7,6 +7,7 @@
 
 #include <M5Cardputer.h>
 #include <SD.h>
+#include <StreamString.h>
 #include <esp_sleep.h>
 #include <driver/gpio.h>
 #include <driver/rtc_io.h>
@@ -118,6 +119,7 @@ static uint32_t lastLogMs = 0;       // 0 = nothing logged since start/wake
 static uint32_t lastInputMs = 0;
 static uint32_t lastDrawMs = 0;
 static bool screenOn = true;
+static bool keepScreenOn = false;  // Z while the screen is off: no timeout until Z or restart
 static char statusMsg[40] = "";
 static uint32_t statusMsgUntil = 0;
 static int settingsSel = 0;
@@ -500,11 +502,22 @@ static void drawNmeaUpload(int x, uint16_t col) {
   canvas.drawString("NMEA", x + NMEA_ARROW_W, 1);
 }
 
+// Small sun: screen kept on with Z.
+static const int SUN_W = 11;
+static void drawSun(int x) {
+  const int cx = x + 5, cy = 9;
+  canvas.fillCircle(cx, cy, 2, TFT_YELLOW);
+  canvas.drawFastHLine(x, cy, 2, TFT_YELLOW);
+  canvas.drawFastHLine(x + 9, cy, 2, TFT_YELLOW);
+  canvas.drawFastVLine(cx, cy - 5, 2, TFT_YELLOW);
+  canvas.drawFastVLine(cx, cy + 4, 2, TFT_YELLOW);
+}
+
 static uint16_t satColor(int sats) {
   return sats >= 7 ? TFT_GREEN : sats >= 4 ? TFT_YELLOW : TFT_RED;
 }
 
-// Left: recording state. Right to left: battery, NMEA server, SD (only if
+// Left: recording state. Right to left: battery, screen kept on, NMEA server, SD (only if
 // missing), satellite reception. Without room the satellite count (or the
 // baud rate being tried) and then the battery percentage are left out.
 static void drawStatusBar() {
@@ -558,11 +571,17 @@ static void drawStatusBar() {
   int need = left + gap + canvas.textWidth(sat) + gap + 24;
   if (!sdOk) need += gap + canvas.textWidth("NOSD");
   if (nmea) need += gap + NMEA_ARROW_W + canvas.textWidth("NMEA");
+  if (keepScreenOn) need += gap + SUN_W;
   bool withCount = satCount.length() && need + canvas.textWidth(satCount) <= right;
   if (withCount) need += canvas.textWidth(satCount);
   bool withPct = need + 3 + canvas.textWidth(pctText) <= right;
 
   int x = drawBattery(right, pct, withPct) - gap;
+  if (keepScreenOn) {
+    x -= SUN_W;
+    drawSun(x);
+    x -= gap;
+  }
   if (nmea) {
     x -= NMEA_ARROW_W + canvas.textWidth("NMEA");
     drawNmeaUpload(x, nmeaCol);
@@ -725,7 +744,7 @@ static void drawDetailsPage() {
   int mv = batteryMvUi();
   line(TFT_GREEN, "Battery %.2fV %d%%  %s", mv / 1000.0f, batteryPctFromMv(mv),
        hasKeyboard ? "KB" : "no KB");
-  line(TFT_SKYBLUE, "WiFi %s %s", !nmeaserver::running() ? "" : cfg.wifiClient ? "client" : "AP",
+  line(TFT_SKYBLUE, "WiFi %s %s", !nmeaserver::running() ? "" : nmeaserver::apActive() ? "AP" : "client",
        nmeaserver::statusText().c_str());
 }
 
@@ -742,12 +761,15 @@ static void drawWifiPage() {
   bool up = nmeaserver::networkUp();
   canvas.setFont(&fonts::Font2);
   canvas.setTextColor(TFT_SKYBLUE);
-  canvas.drawString(cfg.wifiClient ? "NMEA SERVER - joins WiFi" : "NMEA SERVER - own WiFi", 3, 20);
+  bool ap = nmeaserver::apActive();
+  canvas.drawString(!ap ? "NMEA SERVER - joins WiFi"
+                    : nmeaserver::apFallback() ? "NMEA SERVER - own WiFi (fallback)" : "NMEA SERVER - own WiFi",
+                    3, 20);
 
-  if (cfg.wifiClient) {
-    drawLabeled(37, "Network", cfg.wifiSsid.length() ? cfg.wifiSsid : String("(not set)"), TFT_WHITE);
-    String state = nmeaserver::stateText();
-    drawLabeled(53, "Status", state, up ? TFT_GREEN : state == "connecting..." ? TFT_ORANGE : TFT_RED);
+  if (!ap) {
+    String name = nmeaserver::networkName();
+    drawLabeled(37, "Network", name.length() ? name : String("-"), TFT_WHITE);
+    drawLabeled(53, "Status", nmeaserver::stateText(), up ? TFT_GREEN : TFT_ORANGE);
   } else {
     drawLabeled(37, "Network", cfg.apSsid, TFT_WHITE);
     drawLabeled(53, "Password", cfg.apPass.length() ? cfg.apPass : String("(open)"), TFT_WHITE);
@@ -765,7 +787,7 @@ static void drawWifiPage() {
 
   int tcp = nmeaserver::tcpClients();
   String devices = "TCP " + String(tcp);
-  if (!cfg.wifiClient) devices += ", in WiFi " + String(nmeaserver::apStations());
+  if (ap) devices += ", in WiFi " + String(nmeaserver::apStations());
   drawLabeled(113, "Devices", devices, nmeaserver::deviceCount() ? TFT_GREEN : COL_LABEL);
 }
 
@@ -878,7 +900,7 @@ static String shortG(float g) {
   return buf;
 }
 
-// G-G diagram: forward is up, right is right. Dot = now with a 2 s trail,
+// G-G diagram: forward is up, right is right. Dot = now with a 10 s trail,
 // orange = max per direction. Right of it a bar for up / down, then the values.
 static void drawGgPage() {
   if (!motion::calibrated()) { drawNotCalibrated(); return; }
@@ -911,9 +933,11 @@ static void drawGgPage() {
   auto toX = [&](float lat) { return cx + (int)(constrain(lat, -scale, scale) * k); };
   auto toY = [&](float lon) { return cy - (int)(constrain(lon, -scale, scale) * k); };
   int count = motion::historyCount();
-  for (int i = max(0, count - 20); i < count; i++) {
+  const int trail = 100;  // 10 samples per second
+  for (int i = max(0, count - trail); i < count; i++) {
     motion::Sample smp = motion::historyAt(i);
-    canvas.fillCircle(toX(smp.lat / 1000.0f), toY(smp.lon / 1000.0f), 1, COL_LABEL);
+    uint8_t grey = 24 + 104 * (trail - (count - i)) / trail;  // fades out to almost black, newest = COL_LABEL
+    canvas.fillCircle(toX(smp.lat / 1000.0f), toY(smp.lon / 1000.0f), 1, canvas.color565(grey, grey, grey));
   }
   canvas.fillCircle(toX(motion::latG()), toY(motion::lonG()), 4, TFT_RED);
 
@@ -1011,14 +1035,15 @@ static void drawAccelChartPage() {
 enum SettingId {
   S_LOGMODE, S_INTERVAL, S_DISTANCE, S_AUTOPAUSE, S_FORMAT, S_NMEA, S_SLEEP, S_SCREEN, S_FIXTO,
   S_MODULE, S_RX, S_TX, S_BAUD, S_STANDBY,
-  S_SERVER, S_WIFIMODE, S_PORT, S_SSID, S_PASS, S_APSSID, S_APPASS,
+  S_SERVER, S_WIFIMODE, S_PORT, S_SSID, S_PASS, S_SSID2, S_PASS2, S_SSID3, S_PASS3, S_APSSID, S_APPASS,
   S_TZ, S_DST, S_AUTOSTART, S_BRIGHT, S_RECLED, S_COUNT
 };
 static const char* const SETTING_NAMES[S_COUNT] = {
   "Log mode", "Log interval", "Log distance", "Auto pause", "Log format", "NMEA log", "Deep sleep",
   "Screen timeout", "Fix timeout", "GPS module",
   "GPS RX pin", "GPS TX pin", "GPS baud", "GPS standby", "NMEA server", "WiFi mode", "NMEA port",
-  "WiFi SSID", "WiFi password", "AP name", "AP password", "Time zone", "Summer time", "Auto start", "Brightness",
+  "WiFi 1 SSID", "WiFi 1 password", "WiFi 2 SSID", "WiFi 2 password", "WiFi 3 SSID", "WiFi 3 password",
+  "AP name", "AP password", "Time zone", "Summer time", "Auto start", "Brightness",
   "Recording LED",
 };
 static const uint32_t INTERVALS[] = {1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600};
@@ -1054,6 +1079,9 @@ static String secondsText(uint32_t s) {
   if (s < 3600) return String(s / 60) + " min";
   return String(s / 3600) + " h";
 }
+
+static String* textSetting(int id);
+static bool isSsidSetting(int id);
 
 static String settingValue(int id) {
   switch (id) {
@@ -1092,8 +1120,11 @@ static String settingValue(int id) {
     case S_SERVER: return cfg.nmeaServer ? "on" : "off";
     case S_WIFIMODE: return cfg.wifiClient ? "client" : "own AP";
     case S_PORT: return String(cfg.nmeaPort);
-    case S_SSID: return cfg.wifiSsid.length() ? cfg.wifiSsid : String("-");
-    case S_PASS: return cfg.wifiPass.length() ? String("****") : String("-");
+    case S_SSID: case S_SSID2: case S_SSID3:
+    case S_PASS: case S_PASS2: case S_PASS3: {
+      const String& v = *textSetting(id);
+      return !v.length() ? String("-") : isSsidSetting(id) ? v : String("****");
+    }
     case S_APSSID: return cfg.apSsid;
     case S_APPASS: return cfg.apPass.length() ? String("****") : String("(open)");
   }
@@ -1102,7 +1133,11 @@ static String settingValue(int id) {
 
 // WiFi settings complete enough to start the NMEA server.
 static bool wifiConfigured() {
-  if (cfg.wifiClient) return cfg.wifiSsid.length() > 0;
+  if (cfg.wifiClient) {
+    for (const String& ssid : cfg.wifiSsid)
+      if (ssid.length()) return true;
+    return false;
+  }
   return cfg.apSsid.length() > 0 && (cfg.apPass.length() == 0 || cfg.apPass.length() >= 8);
 }
 
@@ -1110,8 +1145,12 @@ static bool wifiConfigured() {
 
 static String* textSetting(int id) {
   switch (id) {
-    case S_SSID: return &cfg.wifiSsid;
-    case S_PASS: return &cfg.wifiPass;
+    case S_SSID: return &cfg.wifiSsid[0];
+    case S_PASS: return &cfg.wifiPass[0];
+    case S_SSID2: return &cfg.wifiSsid[1];
+    case S_PASS2: return &cfg.wifiPass[1];
+    case S_SSID3: return &cfg.wifiSsid[2];
+    case S_PASS3: return &cfg.wifiPass[2];
     case S_APSSID: return &cfg.apSsid;
     case S_APPASS: return &cfg.apPass;
   }
@@ -1119,6 +1158,8 @@ static String* textSetting(int id) {
 }
 
 static bool isTextSetting(int id) { return id == S_PORT || textSetting(id); }
+
+static bool isSsidSetting(int id) { return id == S_SSID || id == S_SSID2 || id == S_SSID3 || id == S_APSSID; }
 
 static void startEdit() {
   editing = true;
@@ -1148,7 +1189,7 @@ static void handleEditKey(const std::vector<char>& word, bool enter, bool del) {
   } else if (del) {
     if (editBuf.length()) editBuf.remove(editBuf.length() - 1);
   } else {
-    size_t maxLen = settingsSel == S_PORT ? 5 : (settingsSel == S_SSID || settingsSel == S_APSSID) ? 32 : 63;
+    size_t maxLen = settingsSel == S_PORT ? 5 : isSsidSetting(settingsSel) ? 32 : 63;
     for (char c : word) {
       if (editBuf.length() < maxLen && (settingsSel != S_PORT || isdigit(c))) editBuf += c;
     }
@@ -1192,21 +1233,25 @@ static void openSettings() {
   page = PAGE_SETTINGS;
 }
 
-static void closeSettings() {
-  bool gpsChanged = cfg.gpsRx != cfgBeforeEdit.gpsRx || cfg.gpsTx != cfgBeforeEdit.gpsTx ||
-                    cfg.gpsBaud != cfgBeforeEdit.gpsBaud;
-  if (gpsChanged || cfg.gpsModule != cfgBeforeEdit.gpsModule || cfg.gpsStandby != cfgBeforeEdit.gpsStandby) {
+// Restarts what the changes from before to cfg affect and saves cfg.
+// Returns the message for the status line.
+static const char* applyConfig(const Config& before) {
+  bool gpsChanged = cfg.gpsRx != before.gpsRx || cfg.gpsTx != before.gpsTx ||
+                    cfg.gpsBaud != before.gpsBaud;
+  if (gpsChanged || cfg.gpsModule != before.gpsModule || cfg.gpsStandby != before.gpsStandby) {
     gpsStandbyFailed = gpsStandbyWorked = false;  // try again, maybe another module
   }
   if (gpsChanged) {
     rtc.detectedBaud = 0;
     startGps();
   }
-  bool wifiChanged = cfg.nmeaServer != cfgBeforeEdit.nmeaServer ||
-                     cfg.wifiClient != cfgBeforeEdit.wifiClient ||
-                     cfg.nmeaPort != cfgBeforeEdit.nmeaPort || cfg.wifiSsid != cfgBeforeEdit.wifiSsid ||
-                     cfg.wifiPass != cfgBeforeEdit.wifiPass || cfg.apSsid != cfgBeforeEdit.apSsid ||
-                     cfg.apPass != cfgBeforeEdit.apPass;
+  bool wifiChanged = cfg.nmeaServer != before.nmeaServer ||
+                     cfg.wifiClient != before.wifiClient ||
+                     cfg.nmeaPort != before.nmeaPort || cfg.apSsid != before.apSsid ||
+                     cfg.apPass != before.apPass;
+  for (int i = 0; i < WIFI_NETWORKS; i++) {
+    wifiChanged |= cfg.wifiSsid[i] != before.wifiSsid[i] || cfg.wifiPass[i] != before.wifiPass[i];
+  }
   bool wifiIncomplete = cfg.nmeaServer && !wifiConfigured();
   if (wifiIncomplete) cfg.nmeaServer = false;
   if (wifiChanged || wifiIncomplete) {
@@ -1214,9 +1259,50 @@ static void closeSettings() {
     else nmeaserver::end();
   }
   bool saved = sdOk && configSave(cfg);
-  if (wifiIncomplete) showStatus("WiFi incomplete: server off");
-  else showStatus(saved ? "Settings saved to SD" : "No SD: settings not saved");
+  if (wifiIncomplete) return "WiFi incomplete: server off";
+  return saved ? "Settings saved to SD" : "No SD: settings not saved";
+}
+
+static void closeSettings() {
+  showStatus(applyConfig(cfgBeforeEdit));
   page = returnPage == PAGE_WIFI && !cfg.nmeaServer ? PAGE_MAIN : returnPage;
+}
+
+// ---- settings from the web page
+
+static const uint32_t WEB_APPLY_DELAY_MS = 500;  // response sent before the WiFi may restart
+static String webConfigLines;     // accepted key=value lines
+static uint32_t webConfigMs = 0;  // when they were accepted, 0 = nothing pending
+
+static String webConfigText() { return configText(cfg); }
+
+static String webApplyConfig(const String& lines) {
+  Config test = cfg;
+  StreamString in;
+  in.print(lines);
+  configParse(test, in);
+  if (test.apPass.length() && test.apPass.length() < 8) return "ap_pass: min. 8 characters";
+  webConfigLines = lines;
+  webConfigMs = millis() | 1;
+  return "";
+}
+
+// Called from loop(): applying in the web request would cut it off with a WiFi restart.
+static void applyWebConfig() {
+  if (!webConfigMs || millis() - webConfigMs < WEB_APPLY_DELAY_MS) return;
+  webConfigMs = 0;
+  Config before = cfg;
+  StreamString in;
+  in.print(webConfigLines);
+  configParse(cfg, in);
+  if (cfg.gpsModule != before.gpsModule) cfg.applyPreset(cfg.gpsModule);  // pins as on the device
+  if (cfg.brightness != before.brightness && screenOn) M5.Display.setBrightness(cfg.brightness);
+  if (memcmp(cfg.imuUp, before.imuUp, sizeof(cfg.imuUp)) || memcmp(cfg.imuFwd, before.imuFwd, sizeof(cfg.imuFwd)) ||
+      cfg.imuFwdLearned != before.imuFwdLearned) {
+    motion::setCalibration(cfg.imuUp, cfg.imuFwd, cfg.imuFwdLearned);
+  }
+  showStatus(applyConfig(before));
+  if (page == PAGE_WIFI && !cfg.nmeaServer) page = PAGE_MAIN;
 }
 
 static void drawSettingsPage() {
@@ -1279,6 +1365,7 @@ static const char* const HELP[][2] = {
   {"T", "tracks"},
   {"H", "help"},
   {"Z", "screen off / sleep"},
+  {"Z (off)", "screen on, stays on"},
   {"P", "screenshot"},
   {"I  M", "track info / map"},
   {"C", "colors, calibrate"},
@@ -1921,6 +2008,7 @@ static void setScreen(bool on) {
 }
 
 static void sleepNowIfPossible() {
+  keepScreenOn = false;
   if (canDeepSleep() && lastLogMs) {
     uint32_t ms = remainingIntervalMs(millis() - lastLogMs);
     draw();
@@ -2169,8 +2257,11 @@ static void handleInput() {
     M5Cardputer.Keyboard.updateKeysState();
     if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
       activity = true;
-      if (screenOn) {
-        auto& ks = M5Cardputer.Keyboard.keysState();
+      auto& ks = M5Cardputer.Keyboard.keysState();
+      if (!screenOn && !ks.word.empty() && tolower(ks.word[0]) == 'z') {
+        keepScreenOn = true;
+        showStatus("Screen stays on until Z");
+      } else if (screenOn) {
         if (page == PAGE_SETTINGS && editing) {
           handleEditKey(ks.word, ks.enter, ks.del);
         } else {
@@ -2261,6 +2352,7 @@ void setup() {
   if (motion::begin()) motion::setCalibration(cfg.imuUp, cfg.imuFwd, cfg.imuFwdLearned);
   startGps();
   web::setStatusHtml(webStatusHtml);
+  web::setConfigHandlers(webConfigText, webApplyConfig);
   if (cfg.nmeaServer && !wifiConfigured()) {
     cfg.nmeaServer = false;
     showStatus("WiFi incomplete: server off", 4000);
@@ -2313,6 +2405,7 @@ void loop() {
   updateRecLed();
   handleInput();
   nmeaserver::update();
+  applyWebConfig();
   int devices = nmeaserver::deviceCount();
   if (devices != lastDeviceCount) {
     showStatus(devices > lastDeviceCount ? ("Device connected (" + String(devices) + ")").c_str()
@@ -2340,7 +2433,7 @@ void loop() {
   }
 
   // Screen timeout: deep sleep between points if possible, otherwise screen off
-  if (cfg.screenTimeoutSec && page != PAGE_SETTINGS &&
+  if (cfg.screenTimeoutSec && !keepScreenOn && page != PAGE_SETTINGS &&
       now - lastInputMs > cfg.screenTimeoutSec * 1000UL) {
     if (canDeepSleep() && lastLogMs) {
       uint32_t ms = remainingIntervalMs(now - lastLogMs);

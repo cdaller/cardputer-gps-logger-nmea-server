@@ -13,12 +13,13 @@ Cardputer v1.x).
 ## Features
 
 - NMEA server over WiFi (TCP + UDP) for chart apps like Garmin Boating, either with its
-  own WiFi network or in an existing one
-- Web page while WiFi is on: live GPS data and all track files for download, in any browser
+  own WiFi network or in the strongest of up to three known networks (own network as fallback)
+- Web page while WiFi is on: live GPS data, all track files for download and the settings,
+  in any browser
 - Large display: latitude, longitude, altitude, local time, satellites (used / in view)
 - Status bar: recording state + point count, satellite reception (FIX / NO FIX, used / in
-  view), NMEA server (`↑ NMEA`), missing SD card, battery level (percentage left out if the
-  bar is full)
+  view), NMEA server (`↑ NMEA`), missing SD card, yellow sun while the screen is kept on
+  (`Z`), battery level (percentage left out if the bar is full)
 - Big page: speed, direction (degrees and N / NE / E ...) and altitude in large letters
 - Details page: speed, course, HDOP with a rough accuracy estimate (HDOP x 5 m), fix age,
   NMEA statistics, log file, battery voltage
@@ -28,7 +29,7 @@ Cardputer v1.x).
   green = used in the fix; letters below the bars: G GPS, R GLONASS, E Galileo,
   C BeiDou, J QZSS, S SBAS
 - Acceleration pages (Cardputer ADV, built-in accelerometer): g-g diagram with the current
-  acceleration, a 2 s trail and the max per direction, an up / down bar, plus a chart of the
+  acceleration, a 10 s trail and the max per direction, an up / down bar, plus a chart of the
   last 24 s; longitudinal (accelerate / brake), lateral (left / right) and vertical (up /
   down) in g, for cars, bikes or planes; max values reset with
   `X` and at each new track. See [Acceleration](#acceleration)
@@ -149,7 +150,7 @@ to the `creator` attribute of GPX files.
 | `S`                | settings (`;` `.` select, `,` `/` change, `` ` `` / `Del` save & exit) |
 | `T`                | tracks (`;` `.` select, `Enter` actions: info / map / delete; shortcuts `I` `M` `D`, `` ` `` / `Del` back) |
 | `H`                | help                                    |
-| `Z`                | screen off now (or deep sleep, if active) |
+| `Z`                | screen off now (or deep sleep, if active); while the screen is off: screen on and it stays on, e.g. on USB power (until the next `Z` or restart) |
 | `P`                | screenshot of the current page as BMP to `/gpslogger/screenshots/` |
 | **G0 click**       | next page, all sub pages in turn / leave settings / help / tracks |
 | **G0 hold**        | start / stop logging                    |
@@ -193,9 +194,13 @@ brightness=128
 rec_led=1                 # 1 = RGB LED pulses red once a minute while logging
 map_color=altitude        # altitude | speed: colors of track map and profile
 nmea_server=0             # 1 = send NMEA over WiFi
-wifi_mode=ap              # ap = own network, client = join wifi_ssid
-wifi_ssid=
+wifi_mode=ap              # ap = own network, client = join the strongest known network
+wifi_ssid=                # known networks for client mode, 1 to 3
 wifi_pass=
+wifi_ssid2=
+wifi_pass2=
+wifi_ssid3=
+wifi_pass3=
 ap_ssid=GPS-NMEA-Logger
 ap_pass=k7rmx2qhwa        # random on first start; empty = open network, else min. 8 characters
 nmea_port=2000            # TCP server and UDP broadcast port
@@ -207,7 +212,7 @@ imu_fwd_learned=0
 
 WiFi names and passwords can also be typed in the settings page: select the entry, press
 `Enter`, type, `Enter` to accept (`Del` deletes, G0 cancels). They are stored in plain text
-in `config.txt`.
+in `config.txt`. All settings can also be changed on the web page (see below).
 
 ## NMEA server (for e.g. Garmin Boating app)
 
@@ -217,8 +222,12 @@ to all TCP clients connected to `nmea_port` (up to 4) and as UDP broadcast to th
 - **Own network** (`wifi_mode=ap`): join the WiFi `GPS-NMEA-Logger` with the iPad, using the
   password shown on the WiFi page (generated randomly on first start, stored as `ap_pass`).
   The Cardputer has the address `192.168.4.1`.
-- **Existing network** (`wifi_mode=client`): the Cardputer joins `wifi_ssid`; its address
-  is shown on the WiFi page.
+- **Existing network** (`wifi_mode=client`): the Cardputer scans for the networks
+  `wifi_ssid`, `wifi_ssid2` and `wifi_ssid3` and joins the one with the strongest signal;
+  its address is shown on the WiFi page. If none of them can be joined within 30 seconds,
+  it opens its own network instead (as with `wifi_mode=ap`, shown as *fallback* on the WiFi
+  page). It stays there until the server is restarted (menu or settings). A lost connection
+  starts a new search, so it may switch to another known network.
 
 The NMEA sentences contain your position: every device that can reach the port gets it,
 and in client mode the UDP broadcast sends it to every device in that network. Use the own
@@ -242,7 +251,14 @@ browser. It shows the current GPS data (refreshed every 2 s) and lists all track
 with type and size; tap a file to download it. Logging goes on meanwhile, but while a
 large file is sent, the display and the NMEA output pause for a moment.
 
-Like the NMEA sentences, the page is open to every device in the network.
+The **Settings** link opens all entries of `config.txt` as a form, with the same
+explanations as in the file. *Save* stores them on the SD card and applies them right away;
+if WiFi settings changed, the network restarts and you need to reconnect. Passwords are
+never shown: leave a password field empty to keep the stored one (so an open own network,
+`ap_pass` empty, can only be set on the Cardputer or in the file).
+
+Like the NMEA sentences, the page is open to every device in the network - including the
+settings, so anyone there can change them.
 
 ### Testing from a computer
 
