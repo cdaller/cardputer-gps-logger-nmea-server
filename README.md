@@ -51,7 +51,7 @@ Cardputer v1.x).
 - Log modes like Garmin: smart (at turns and speed changes), by time (1 s … 1 h) or by
   distance (5 m … 1 km); auto pause while standing still; inaccurate fixes are never
   recorded. See [Log modes](#log-modes)
-- Configurable format, time zone, brightness, timeouts
+- Configurable format, time zone (with automatic daylight saving), brightness, timeouts
 - RGB LED fades in and out red once a minute while logging (`rec_led`, default on; not
   during deep sleep)
 - Deep sleep between points while logging (time mode, interval >= 15 s)
@@ -187,6 +187,7 @@ deep_sleep=0
 screen_timeout=60         # seconds, 0 = never
 fix_timeout=60            # max. seconds to wait for a fix after deep sleep wake-up
 tz_offset=0               # added to UTC for the display: hours or hours:minutes (+5:30)
+dst=EU                    # off | EU | US: +1 h during daylight saving time
 auto_start=0              # start logging after power on
 brightness=128
 rec_led=1                 # 1 = RGB LED pulses red once a minute while logging

@@ -30,6 +30,10 @@ extern const char* const LOG_FORMAT_NAMES[LOG_FORMAT_COUNT];
 enum LogMode : uint8_t { LOG_MODE_SMART = 0, LOG_MODE_TIME, LOG_MODE_DISTANCE, LOG_MODE_COUNT };
 extern const char* const LOG_MODE_NAMES[LOG_MODE_COUNT];
 
+// Daylight saving time rule applied on top of tz_offset.
+enum DstRule : uint8_t { DST_OFF = 0, DST_EU, DST_US, DST_COUNT };
+extern const char* const DST_NAMES[DST_COUNT];
+
 struct Config {
   uint8_t gpsModule = GPS_UNIT_V11;
   int8_t gpsRx = 1;
@@ -45,6 +49,7 @@ struct Config {
   uint16_t screenTimeoutSec = 60; // 0 = never
   uint16_t fixTimeoutSec = 60;    // max. time to wait for a fix after waking up
   int16_t tzOffsetMin = 0;        // minutes added to UTC for the display
+  uint8_t dstRule = DST_EU;       // +1 h in summer
   bool autoStart = false;
   uint8_t brightness = 128;
   bool recLed = true;             // RGB LED pulses red once a minute while logging
@@ -72,3 +77,4 @@ void configDefaults(Config& cfg, bool isAdv);
 bool configLoad(Config& cfg);        // false if no file (cfg unchanged)
 bool configSave(const Config& cfg);
 String tzText(int16_t minutes);      // "+1", "+5:30", "-3:30"
+int16_t tzOffsetAt(const Config& cfg, time_t utc);  // tz_offset plus daylight saving at that time

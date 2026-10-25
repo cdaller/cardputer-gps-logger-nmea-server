@@ -221,8 +221,8 @@ static void startGps() {
   gps.setRawSink(nmeaSink);
 }
 
-// UTC date/time from the GPS shifted by the configured offset.
-static bool localTime(struct tm& out) {
+// UTC date/time from the GPS shifted by the configured offset (incl. daylight saving).
+static bool localTime(struct tm& out, int16_t& offsetMin) {
   TinyGPSPlus& g = gps.gps();
   if (!g.time.isValid() || !g.date.isValid() || g.date.year() < 2020) return false;
   struct tm t = {};
@@ -233,7 +233,8 @@ static bool localTime(struct tm& out) {
   t.tm_min = g.time.minute();
   t.tm_sec = g.time.second();
   time_t epoch = mktime(&t);  // TZ is UTC on the ESP32 unless set
-  epoch += (time_t)cfg.tzOffsetMin * 60;
+  offsetMin = tzOffsetAt(cfg, epoch);
+  epoch += (time_t)offsetMin * 60;
   gmtime_r(&epoch, &out);
   return true;
 }
@@ -626,14 +627,15 @@ static void drawMainPage() {
   canvas.drawString("/" + String(gps.satsInView()), 172 + canvas.textWidth("00", &fonts::Font4), 84);
 
   struct tm t;
-  if (localTime(t)) {
+  int16_t tz;
+  if (localTime(t, tz)) {
     snprintf(buf, sizeof(buf), "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
     drawRow(106, "TIME", buf, COL_TIME);
     canvas.setFont(&fonts::Font0);
     canvas.setTextColor(COL_LABEL);
     snprintf(buf, sizeof(buf), "%04d-%02d-%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
     canvas.drawString(buf, 160, 110);
-    canvas.drawString("UTC" + tzText(cfg.tzOffsetMin), 160, 121);
+    canvas.drawString("UTC" + tzText(tz), 160, 121);
   } else {
     drawRow(106, "TIME", "--:--:--", COL_NOFIX);
   }
@@ -1010,13 +1012,13 @@ enum SettingId {
   S_LOGMODE, S_INTERVAL, S_DISTANCE, S_AUTOPAUSE, S_FORMAT, S_NMEA, S_SLEEP, S_SCREEN, S_FIXTO,
   S_MODULE, S_RX, S_TX, S_BAUD, S_STANDBY,
   S_SERVER, S_WIFIMODE, S_PORT, S_SSID, S_PASS, S_APSSID, S_APPASS,
-  S_TZ, S_AUTOSTART, S_BRIGHT, S_RECLED, S_COUNT
+  S_TZ, S_DST, S_AUTOSTART, S_BRIGHT, S_RECLED, S_COUNT
 };
 static const char* const SETTING_NAMES[S_COUNT] = {
   "Log mode", "Log interval", "Log distance", "Auto pause", "Log format", "NMEA log", "Deep sleep",
   "Screen timeout", "Fix timeout", "GPS module",
   "GPS RX pin", "GPS TX pin", "GPS baud", "GPS standby", "NMEA server", "WiFi mode", "NMEA port",
-  "WiFi SSID", "WiFi password", "AP name", "AP password", "Time zone", "Auto start", "Brightness",
+  "WiFi SSID", "WiFi password", "AP name", "AP password", "Time zone", "Summer time", "Auto start", "Brightness",
   "Recording LED",
 };
 static const uint32_t INTERVALS[] = {1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600};
@@ -1083,6 +1085,7 @@ static String settingValue(int id) {
       if (cfg.nmeaServer) return "on (WiFi on)";
       return cfg.deepSleep && cfg.logMode == LOG_MODE_TIME ? "on (deep sleep)" : "on";
     case S_TZ: return "UTC" + tzText(cfg.tzOffsetMin);
+    case S_DST: return DST_NAMES[cfg.dstRule];
     case S_AUTOSTART: return cfg.autoStart ? "on" : "off";
     case S_BRIGHT: return String(cfg.brightness * 100 / 255) + " %";
     case S_RECLED: return cfg.recLed ? "on" : "off";
@@ -1169,6 +1172,7 @@ static void changeSetting(int id, int dir) {
     case S_BAUD: cfg.gpsBaud = cycle(BAUDS, cfg.gpsBaud, dir); break;
     case S_STANDBY: cfg.gpsStandby = !cfg.gpsStandby; break;
     case S_TZ: cfg.tzOffsetMin = cycle(TZ_OFFSETS, cfg.tzOffsetMin, dir); break;
+    case S_DST: cfg.dstRule = (cfg.dstRule + DST_COUNT + dir) % DST_COUNT; break;
     case S_AUTOSTART: cfg.autoStart = !cfg.autoStart; break;
     case S_RECLED: cfg.recLed = !cfg.recLed; break;
     case S_SERVER: cfg.nmeaServer = !cfg.nmeaServer; break;
@@ -1396,10 +1400,10 @@ static uint16_t trackTypeColor(uint8_t type) {
   return type == tracks::TYPE_CSV ? TFT_CYAN : type == tracks::TYPE_GPX ? TFT_YELLOW : TFT_MAGENTA;
 }
 
-// Local date and time, with the configured UTC offset.
+// Local date and time, with the configured UTC offset and daylight saving.
 static String dateTimeText(time_t utc) {
   if (!utc) return "--";
-  time_t local = utc + (time_t)cfg.tzOffsetMin * 60;
+  time_t local = utc + (time_t)tzOffsetAt(cfg, utc) * 60;
   struct tm t;
   gmtime_r(&local, &t);
   char buf[24];
@@ -1875,9 +1879,10 @@ static String webStatusHtml() {
            gps.satsInView(), g.hdop.hdop(), acc);
   row("Satellites", buf);
   struct tm t;
-  if (localTime(t)) {
+  int16_t tz;
+  if (localTime(t, tz)) {
     snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d UTC%s", t.tm_year + 1900, t.tm_mon + 1,
-             t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, tzText(cfg.tzOffsetMin).c_str());
+             t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, tzText(tz).c_str());
     row("Time", buf);
   }
   const char* name = strrchr(rtc.baseName, '/');

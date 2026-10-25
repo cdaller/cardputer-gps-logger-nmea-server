@@ -1,6 +1,7 @@
 #include "config.h"
 #include <SD.h>
 #include <StreamString.h>
+#include <time.h>
 
 const GpsPreset GPS_PRESETS[GPS_MODULE_COUNT] = {
   {"cap_lora1262", "CAP LoRa-1262", 15, 13, 115200},
@@ -12,6 +13,7 @@ const GpsPreset GPS_PRESETS[GPS_MODULE_COUNT] = {
 
 const char* const LOG_FORMAT_NAMES[LOG_FORMAT_COUNT] = {"CSV", "GPX", "CSV+GPX"};
 const char* const LOG_MODE_NAMES[LOG_MODE_COUNT] = {"Smart", "Time", "Distance"};
+const char* const DST_NAMES[DST_COUNT] = {"off", "EU", "US"};
 
 // Written first and renamed to CONFIG_PATH, so a power loss while saving
 // doesn't leave a truncated config.
@@ -36,6 +38,40 @@ String tzText(int16_t minutes) {
   if (m % 60) snprintf(buf, sizeof(buf), "%c%d:%02d", minutes < 0 ? '-' : '+', m / 60, m % 60);
   else snprintf(buf, sizeof(buf), "%c%d", minutes < 0 ? '-' : '+', m / 60);
   return buf;
+}
+
+static time_t utcAt(int year, int mon, int day, int hour) {
+  struct tm t = {};
+  t.tm_year = year - 1900;
+  t.tm_mon = mon - 1;
+  t.tm_mday = day;
+  t.tm_hour = hour;
+  return mktime(&t);  // TZ is UTC on the ESP32 unless set
+}
+
+// Day of month of the first Sunday on or after the given day.
+static int sundayFrom(int year, int mon, int day) {
+  int wday = (utcAt(year, mon, day, 0) / 86400 + 4) % 7;  // 1970-01-01 was a Thursday
+  return day + (7 - wday) % 7;
+}
+
+int16_t tzOffsetAt(const Config& cfg, time_t utc) {
+  int16_t base = cfg.tzOffsetMin;
+  if (cfg.dstRule == DST_OFF) return base;
+  struct tm t;
+  gmtime_r(&utc, &t);
+  int y = t.tm_year + 1900;
+  time_t start, end;
+  if (cfg.dstRule == DST_EU) {
+    // last Sunday of March to last Sunday of October, 01:00 UTC
+    start = utcAt(y, 3, sundayFrom(y, 3, 25), 1);
+    end = utcAt(y, 10, sundayFrom(y, 10, 25), 1);
+  } else {
+    // second Sunday of March 02:00 standard time to first Sunday of November 02:00 daylight time
+    start = utcAt(y, 3, sundayFrom(y, 3, 8), 2) - base * 60;
+    end = utcAt(y, 11, sundayFrom(y, 11, 1), 2) - (base + 60) * 60;
+  }
+  return utc >= start && utc < end ? base + 60 : base;
 }
 
 // "2", "-3.5" (hours) or "+5:45", "-3:30" (hours:minutes)
@@ -81,7 +117,10 @@ bool configLoad(Config& cfg) {
     else if (key == "screen_timeout") cfg.screenTimeoutSec = constrain(n, 0, 65535);
     else if (key == "fix_timeout") cfg.fixTimeoutSec = constrain(n, 5, 3600);
     else if (key == "tz_offset") cfg.tzOffsetMin = constrain(parseTzMinutes(val), -12 * 60, 14 * 60);
-    else if (key == "auto_start") cfg.autoStart = n != 0;
+    else if (key == "dst") {
+      for (uint8_t i = 0; i < DST_COUNT; i++)
+        if (val.equalsIgnoreCase(DST_NAMES[i])) cfg.dstRule = i;
+    } else if (key == "auto_start") cfg.autoStart = n != 0;
     else if (key == "brightness") cfg.brightness = constrain(n, 8, 255);
     else if (key == "rec_led") cfg.recLed = n != 0;
     else if (key == "map_color") cfg.mapSpeed = val.equalsIgnoreCase("speed");
@@ -130,6 +169,8 @@ bool configSave(const Config& cfg) {
   f.printf("fix_timeout=%u\n", cfg.fixTimeoutSec);
   f.println("# added to UTC for the displayed time, hours or hours:minutes (log files are always UTC)");
   f.printf("tz_offset=%s\n", tzText(cfg.tzOffsetMin).c_str());
+  f.println("# off | EU | US: add one hour to tz_offset during daylight saving time");
+  f.printf("dst=%s\n", DST_NAMES[cfg.dstRule]);
   f.println("# 1 = start logging automatically after power on");
   f.printf("auto_start=%d\n", cfg.autoStart ? 1 : 0);
   f.printf("brightness=%u\n", cfg.brightness);
