@@ -56,6 +56,7 @@ struct Config {
   uint8_t brightness = 128;
   bool recLed = true;             // RGB LED pulses red once a minute while logging
   bool mapSpeed = false;          // track map / profile colored by speed instead of altitude
+  String mapOverlays;             // GPX files shown on the maps, separated by '|'
   bool nmeaServer = false;        // serve NMEA over WiFi (TCP + UDP)
   bool wifiClient = false;        // false: own access point, true: join the strongest wifiSsid
   String wifiSsid[WIFI_NETWORKS]; // empty = slot unused

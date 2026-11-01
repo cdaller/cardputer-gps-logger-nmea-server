@@ -33,9 +33,10 @@ Cardputer v1.x).
   last 24 s; longitudinal (accelerate / brake), lateral (left / right) and vertical (up /
   down) in g, for cars, bikes or planes; max values reset with
   `X` and at each new track. See [Acceleration](#acceleration)
-- Menu page: start/stop logging, start/stop NMEA server, settings, tracks, help, screen off /
-  deep sleep - no need to remember key letters
-- Tracks page: all track files on the SD card with type and size, newest first; delete them,
+- Menu page: start/stop logging, start/stop NMEA server, settings, tracks, map overlays, help,
+  screen off / deep sleep - no need to remember key letters
+- Tracks page: the track files with type and size, newest first, starting in
+  `/gpslogger/tracks`; folders can be opened (`Enter`) and left (`,` or `..`); delete files,
   show distance, duration, altitude range, max speed, start / end time and altitude profile,
   or draw the track as a map (CSV and GPX files). Map and profile are colored by altitude or
   speed, switched with `C`
@@ -45,6 +46,13 @@ Cardputer v1.x).
   track map follows the latest position until it is panned
 - Time cursor (`[` / `]`) on the altitude profile and the map: shows time, altitude and speed
   of the point; a zoomed map is centered on it
+- Map overlays (`O` or menu): show up to 8 GPX files on the maps, e.g. cities,
+  SOTA summits, planned routes or recorded tracks. Waypoints are drawn as dots, named when
+  30 or fewer are in view; tracks and routes as lines, each file in its own color. Files are
+  picked in a folder browser starting in `/gpslogger/gpx` (recorded tracks are in
+  `/gpslogger/tracks`); the selection is kept in the config. Without a track being recorded
+  the current track map shows the overlays and your GPS position (zoomed in, it follows you).
+  See [Map overlays](#map-overlays)
 - Logging to `/gpslogger/tracks/YYYYMMDD_HHMMSS.csv` / `.gpx` (UTC time stamps).
   The GPX file is closed after every point, so it stays valid if power is lost.
 - Optional raw NMEA log (`.nmea` next to the track): all sentences from the GPS,
@@ -150,11 +158,12 @@ to the `creator` attribute of GPX files.
 | `C` / `X`          | acceleration pages: calibrate (standing still) / reset max values |
 | `;` `.` + `Enter`  | menu page: select item (up/down arrow keys) and run it |
 | `S`                | settings (`;` `.` select, `,` `/` change, `` ` `` / `Del` save & exit) |
-| `T`                | tracks (`;` `.` select, `Enter` actions: info / map / delete; shortcuts `I` `M` `D`, `` ` `` / `Del` back) |
+| `T`                | tracks (`;` `.` select, `Enter` actions: info / map / delete or open a folder; `,` folder up; shortcuts `I` `M` `D`, `` ` `` / `Del` back) |
+| `O`                | map overlays (`;` `.` select, `Enter` / `Space` show / hide a GPX file or open a folder, `,` folder up, `X` hide all, `` ` `` / `Del` back) |
 | `H`                | help                                    |
 | `Z`                | screen off now (or deep sleep, if active); while the screen is off: screen on and it stays on, e.g. on USB power (until the next `Z` or restart) |
 | `P`                | screenshot of the current page as BMP to `/gpslogger/screenshots/` |
-| **G0 click**       | next page, all sub pages in turn / leave settings / help / tracks |
+| **G0 click**       | next page, all sub pages in turn / leave settings / help / tracks / map overlays |
 | **G0 hold**        | start / stop logging                    |
 
 Any key turns the screen back on. G0 wakes the device from deep sleep.
@@ -169,6 +178,25 @@ Main pages and their sub pages (a bar at the right edge shows the sub page and h
 | 4 Acceleration     | g-g diagram, chart (Cardputer ADV only)    |
 | 5 WiFi             | NMEA server (only while it is on)          |
 | 6 Menu             | menu                                       |
+
+## Map overlays
+
+GPX files with waypoints (`<wpt>`) and lines (`<trk>` / `<trkseg>`, `<rte>`) can be shown
+on the track maps and the current track map. Copy them to `/gpslogger/gpx` on the SD card
+(any other folder works too), press `O` and select them with `Enter`; a filled box in the
+file's color marks the ones shown. A test file with 96 Austrian cities and some railway lines
+is in [`sdcard/gpslogger/gpx/austria_cities.gpx`](sdcard/gpslogger/gpx/austria_cities.gpx).
+
+To save RAM (there is no PSRAM), each file is read twice: first to count, then into
+exactly sized arrays of 12 bytes per waypoint and 8 bytes per line point. Waypoint names
+stay on the SD card and are read only for the labels shown (48 cached). Lines are thinned
+out evenly when they don't fit into the free memory (64 KB are always left free); the
+message after loading then shows e.g. `1:4` (every 4th point). Some thousand waypoints,
+e.g. all SOTA summits of a country, are fine. Drawing skips files and line pieces out of
+view, finds the waypoints in view by binary search, and draws them as single pixels when
+there are more than 300.
+
+Names are shown in ASCII: umlauts as ae / oe / ue / ss, other accents removed.
 
 ## Configuration
 
@@ -195,6 +223,7 @@ auto_start=0              # start logging after power on
 brightness=128
 rec_led=1                 # 1 = RGB LED pulses red once a minute while logging
 map_color=altitude        # altitude | speed: colors of track map and profile
+map_overlays=             # GPX files shown on the maps (O), full paths separated by |
 nmea_server=0             # 1 = send NMEA over WiFi
 wifi_mode=ap              # ap = own network, client = join the strongest known network
 wifi_ssid=                # known networks for client mode, 1 to 3

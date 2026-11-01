@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="gps_logger_cardputer test data" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata><name>Austrian cities</name><desc>Test overlay: cities as waypoints, railway lines as route and track</desc></metadata>
+  <wpt lat="48.2082" lon="16.3738"><name>Wien</name><type>city</type></wpt>
+  <wpt lat="47.0707" lon="15.4395"><name>Graz</name><type>city</type></wpt>
+  <wpt lat="48.3069" lon="14.2858"><name>Linz</name><type>city</type></wpt>
+  <wpt lat="47.8095" lon="13.0550"><name>Salzburg</name><type>city</type></wpt>
+  <wpt lat="47.2692" lon="11.4041"><name>Innsbruck</name><type>city</type></wpt>
+  <wpt lat="46.6249" lon="14.3050"><name>Klagenfurt</name><type>city</type></wpt>
+  <wpt lat="46.6111" lon="13.8558"><name>Villach</name><type>city</type></wpt>
+  <wpt lat="48.1575" lon="14.0289"><name>Wels</name><type>city</type></wpt>
+  <wpt lat="48.2047" lon="15.6256"><name>St. Pölten</name><type>city</type></wpt>
+  <wpt lat="47.4125" lon="9.7417"><name>Dornbirn</name><type>city</type></wpt>
+  <wpt lat="47.8151" lon="16.2463"><name>Wiener Neustadt</name><type>city</type></wpt>
+  <wpt lat="48.0427" lon="14.4213"><name>Steyr</name><type>city</type></wpt>
+  <wpt lat="47.2381" lon="9.5980"><name>Feldkirch</name><type>city</type></wpt>
+  <wpt lat="47.5031" lon="9.7471"><name>Bregenz</name><type>city</type></wpt>
+  <wpt lat="48.2600" lon="14.2533"><name>Leonding</name><type>city</type></wpt>
+  <wpt lat="48.3053" lon="16.3253"><name>Klosterneuburg</name><type>city</type></wpt>
+  <wpt lat="48.0069" lon="16.2309"><name>Baden</name><type>city</type></wpt>
+  <wpt lat="46.8406" lon="14.8442"><name>Wolfsberg</name><type>city</type></wpt>
+  <wpt lat="47.3765" lon="15.0914"><name>Leoben</name><type>city</type></wpt>
+  <wpt lat="48.4092" lon="15.6142"><name>Krems an der Donau</name><type>city</type></wpt>
+  <wpt lat="48.2219" lon="14.2397"><name>Traun</name><type>city</type></wpt>
+  <wpt lat="48.1229" lon="14.8721"><name>Amstetten</name><type>city</type></wpt>
+  <wpt lat="47.4264" lon="9.6586"><name>Lustenau</name><type>city</type></wpt>
+  <wpt lat="47.4440" lon="15.2933"><name>Kapfenberg</name><type>city</type></wpt>
+  <wpt lat="48.0856" lon="16.2833"><name>Mödling</name><type>city</type></wpt>
+  <wpt lat="47.6833" lon="13.0969"><name>Hallein</name><type>city</type></wpt>
+  <wpt lat="47.5833" lon="12.1667"><name>Kufstein</name><type>city</type></wpt>
+  <wpt lat="48.0186" lon="16.2933"><name>Traiskirchen</name><type>city</type></wpt>
+  <wpt lat="48.1411" lon="16.4786"><name>Schwechat</name><type>city</type></wpt>
+  <wpt lat="48.2567" lon="13.0347"><name>Braunau am Inn</name><type>city</type></wpt>
+  <wpt lat="48.3858" lon="16.2108"><name>Stockerau</name><type>city</type></wpt>
+  <wpt lat="47.4269" lon="12.8483"><name>Saalfelden</name><type>city</type></wpt>
+  <wpt lat="48.3294" lon="16.0583"><name>Tulln an der Donau</name><type>city</type></wpt>
+  <wpt lat="47.3667" lon="9.6833"><name>Hohenems</name><type>city</type></wpt>
+  <wpt lat="46.8000" lon="13.5000"><name>Spittal an der Drau</name><type>city</type></wpt>
+  <wpt lat="47.3069" lon="11.0722"><name>Telfs</name><type>city</type></wpt>
+  <wpt lat="47.7272" lon="16.0350"><name>Ternitz</name><type>city</type></wpt>
+  <wpt lat="46.7236" lon="14.0919"><name>Feldkirchen in Kärnten</name><type>city</type></wpt>
+  <wpt lat="47.1547" lon="9.8222"><name>Bludenz</name><type>city</type></wpt>
+  <wpt lat="47.7111" lon="13.6200"><name>Bad Ischl</name><type>city</type></wpt>
+  <wpt lat="47.8456" lon="16.5233"><name>Eisenstadt</name><type>city</type></wpt>
+  <wpt lat="47.3500" lon="11.7000"><name>Schwaz</name><type>city</type></wpt>
+  <wpt lat="47.2833" lon="11.5000"><name>Hall in Tirol</name><type>city</type></wpt>
+  <wpt lat="47.9181" lon="13.7994"><name>Gmunden</name><type>city</type></wpt>
+  <wpt lat="47.4833" lon="12.0667"><name>Wörgl</name><type>city</type></wpt>
+  <wpt lat="47.4106" lon="15.2686"><name>Bruck an der Mur</name><type>city</type></wpt>
+  <wpt lat="46.7667" lon="14.3667"><name>Sankt Veit an der Glan</name><type>city</type></wpt>
+  <wpt lat="48.3453" lon="16.3331"><name>Korneuburg</name><type>city</type></wpt>
+  <wpt lat="47.7269" lon="16.0817"><name>Neunkirchen</name><type>city</type></wpt>
+  <wpt lat="48.0086" lon="13.6556"><name>Vöcklabruck</name><type>city</type></wpt>
+  <wpt lat="46.8297" lon="12.7697"><name>Lienz</name><type>city</type></wpt>
+  <wpt lat="48.5667" lon="16.5667"><name>Mistelbach</name><type>city</type></wpt>
+  <wpt lat="47.3256" lon="12.7944"><name>Zell am See</name><type>city</type></wpt>
+  <wpt lat="47.2878" lon="16.2031"><name>Oberwart</name><type>city</type></wpt>
+  <wpt lat="47.4464" lon="12.3922"><name>Kitzbühel</name><type>city</type></wpt>
+  <wpt lat="47.1394" lon="10.5653"><name>Landeck</name><type>city</type></wpt>
+  <wpt lat="47.4833" lon="10.7167"><name>Reutte</name><type>city</type></wpt>
+  <wpt lat="47.2394" lon="10.7381"><name>Imst</name><type>city</type></wpt>
+  <wpt lat="47.3500" lon="13.2000"><name>St. Johann im Pongau</name><type>city</type></wpt>
+  <wpt lat="47.4167" lon="13.2167"><name>Bischofshofen</name><type>city</type></wpt>
+  <wpt lat="47.2806" lon="15.9700"><name>Hartberg</name><type>city</type></wpt>
+  <wpt lat="47.1725" lon="14.6603"><name>Judenburg</name><type>city</type></wpt>
+  <wpt lat="47.5667" lon="14.2333"><name>Liezen</name><type>city</type></wpt>
+  <wpt lat="48.6033" lon="15.1689"><name>Zwettl</name><type>city</type></wpt>
+  <wpt lat="48.6625" lon="15.6564"><name>Horn</name><type>city</type></wpt>
+  <wpt lat="48.7667" lon="14.9833"><name>Gmünd</name><type>city</type></wpt>
+  <wpt lat="48.5117" lon="14.5047"><name>Freistadt</name><type>city</type></wpt>
+  <wpt lat="48.2103" lon="13.4894"><name>Ried im Innkreis</name><type>city</type></wpt>
+  <wpt lat="48.4569" lon="13.4317"><name>Schärding</name><type>city</type></wpt>
+  <wpt lat="47.9486" lon="16.8417"><name>Neusiedl am See</name><type>city</type></wpt>
+  <wpt lat="47.7369" lon="16.3969"><name>Mattersburg</name><type>city</type></wpt>
+  <wpt lat="47.0583" lon="16.3236"><name>Güssing</name><type>city</type></wpt>
+  <wpt lat="46.9381" lon="16.1408"><name>Jennersdorf</name><type>city</type></wpt>
+  <wpt lat="46.7831" lon="15.5447"><name>Leibnitz</name><type>city</type></wpt>
+  <wpt lat="46.8158" lon="15.2222"><name>Deutschlandsberg</name><type>city</type></wpt>
+  <wpt lat="47.0444" lon="15.1500"><name>Voitsberg</name><type>city</type></wpt>
+  <wpt lat="47.2189" lon="15.6253"><name>Weiz</name><type>city</type></wpt>
+  <wpt lat="46.6881" lon="15.9878"><name>Bad Radkersburg</name><type>city</type></wpt>
+  <wpt lat="47.1108" lon="14.1714"><name>Murau</name><type>city</type></wpt>
+  <wpt lat="47.6075" lon="15.6731"><name>Mürzzuschlag</name><type>city</type></wpt>
+  <wpt lat="46.6622" lon="14.6347"><name>Völkermarkt</name><type>city</type></wpt>
+  <wpt lat="46.6269" lon="13.3672"><name>Hermagor</name><type>city</type></wpt>
+  <wpt lat="48.0256" lon="16.7792"><name>Bruck an der Leitha</name><type>city</type></wpt>
+  <wpt lat="48.3392" lon="16.7203"><name>Gänserndorf</name><type>city</type></wpt>
+  <wpt lat="48.5631" lon="16.0792"><name>Hollabrunn</name><type>city</type></wpt>
+  <wpt lat="48.2269" lon="15.3436"><name>Melk</name><type>city</type></wpt>
+  <wpt lat="48.0050" lon="15.1667"><name>Scheibbs</name><type>city</type></wpt>
+  <wpt lat="48.0128" lon="15.5967"><name>Lilienfeld</name><type>city</type></wpt>
+  <wpt lat="47.9603" lon="14.7739"><name>Waidhofen an der Ybbs</name><type>city</type></wpt>
+  <wpt lat="48.8167" lon="15.2833"><name>Waidhofen an der Thaya</name><type>city</type></wpt>
+  <wpt lat="47.9050" lon="14.1219"><name>Kirchdorf an der Krems</name><type>city</type></wpt>
+  <wpt lat="48.2503" lon="14.6336"><name>Perg</name><type>city</type></wpt>
+  <wpt lat="48.5717" lon="13.9897"><name>Rohrbach</name><type>city</type></wpt>
+  <wpt lat="48.3086" lon="14.0219"><name>Eferding</name><type>city</type></wpt>
+  <wpt lat="48.2350" lon="13.8319"><name>Grieskirchen</name><type>city</type></wpt>
+  <wpt lat="47.1281" lon="13.8108"><name>Tamsweg</name><type>city</type></wpt>
+  <rte>
+    <name>Westbahn</name>
+    <rtept lat="48.2082" lon="16.3738"><name>Wien</name></rtept>
+    <rtept lat="48.2047" lon="15.6256"><name>St. Pölten</name></rtept>
+    <rtept lat="48.2269" lon="15.3436"><name>Melk</name></rtept>
+    <rtept lat="48.1229" lon="14.8721"><name>Amstetten</name></rtept>
+    <rtept lat="48.3069" lon="14.2858"><name>Linz</name></rtept>
+    <rtept lat="48.1575" lon="14.0289"><name>Wels</name></rtept>
+    <rtept lat="48.0086" lon="13.6556"><name>Vöcklabruck</name></rtept>
+    <rtept lat="47.8095" lon="13.0550"><name>Salzburg</name></rtept>
+  </rte>
+  <trk>
+    <name>Südbahn</name>
+    <trkseg>
+      <trkpt lat="48.2082" lon="16.3738"><name>Wien</name></trkpt>
+      <trkpt lat="48.0069" lon="16.2309"><name>Baden</name></trkpt>
+      <trkpt lat="47.8151" lon="16.2463"><name>Wiener Neustadt</name></trkpt>
+      <trkpt lat="47.7269" lon="16.0817"><name>Neunkirchen</name></trkpt>
+      <trkpt lat="47.6075" lon="15.6731"><name>Mürzzuschlag</name></trkpt>
+      <trkpt lat="47.4440" lon="15.2933"><name>Kapfenberg</name></trkpt>
+      <trkpt lat="47.4106" lon="15.2686"><name>Bruck an der Mur</name></trkpt>
+      <trkpt lat="47.0707" lon="15.4395"><name>Graz</name></trkpt>
+    </trkseg>
+    <trkseg>
+      <trkpt lat="47.4106" lon="15.2686"><name>Bruck an der Mur</name></trkpt>
+      <trkpt lat="47.3765" lon="15.0914"><name>Leoben</name></trkpt>
+      <trkpt lat="47.1725" lon="14.6603"><name>Judenburg</name></trkpt>
+      <trkpt lat="46.7667" lon="14.3667"><name>Sankt Veit an der Glan</name></trkpt>
+      <trkpt lat="46.6249" lon="14.3050"><name>Klagenfurt</name></trkpt>
+      <trkpt lat="46.6111" lon="13.8558"><name>Villach</name></trkpt>
+    </trkseg>
+  </trk>
+  <trk>
+    <name>Westbahn Tirol / Vorarlberg</name>
+    <trkseg>
+      <trkpt lat="47.8095" lon="13.0550"><name>Salzburg</name></trkpt>
+      <trkpt lat="47.4269" lon="12.8483"><name>Saalfelden</name></trkpt>
+      <trkpt lat="47.4464" lon="12.3922"><name>Kitzbühel</name></trkpt>
+      <trkpt lat="47.4833" lon="12.0667"><name>Wörgl</name></trkpt>
+      <trkpt lat="47.3500" lon="11.7000"><name>Schwaz</name></trkpt>
+      <trkpt lat="47.2833" lon="11.5000"><name>Hall in Tirol</name></trkpt>
+      <trkpt lat="47.2692" lon="11.4041"><name>Innsbruck</name></trkpt>
+      <trkpt lat="47.3069" lon="11.0722"><name>Telfs</name></trkpt>
+      <trkpt lat="47.2394" lon="10.7381"><name>Imst</name></trkpt>
+      <trkpt lat="47.1394" lon="10.5653"><name>Landeck</name></trkpt>
+      <trkpt lat="47.1547" lon="9.8222"><name>Bludenz</name></trkpt>
+      <trkpt lat="47.2381" lon="9.5980"><name>Feldkirch</name></trkpt>
+      <trkpt lat="47.4125" lon="9.7417"><name>Dornbirn</name></trkpt>
+      <trkpt lat="47.5031" lon="9.7471"><name>Bregenz</name></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

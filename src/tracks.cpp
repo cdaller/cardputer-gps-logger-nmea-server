@@ -1,11 +1,10 @@
 #include "tracks.h"
-#include "logger.h"
 #include <SD.h>
 #include <algorithm>
 
 namespace tracks {
 
-const char* const TYPE_NAMES[3] = {"CSV", "GPX", "NMEA"};
+const char* const TYPE_NAMES[4] = {"CSV", "GPX", "NMEA", "DIR"};
 
 static int typeOf(const String& name) {
   if (name.endsWith(".csv")) return TYPE_CSV;
@@ -14,19 +13,34 @@ static int typeOf(const String& name) {
   return -1;
 }
 
-std::vector<FileInfo> list() {
+String parentDir(const String& dir) {
+  int slash = dir.lastIndexOf('/');
+  return slash > 0 ? dir.substring(0, slash) : String("/");
+}
+
+std::vector<FileInfo> list(String& dir, bool gpxOnly, bool newestFirst) {
   std::vector<FileInfo> files;
-  File dir = SD.open(LOG_DIR);
-  if (!dir || !dir.isDirectory()) return files;
-  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+  File d = SD.open(dir);
+  while ((!d || !d.isDirectory()) && dir != "/") {
+    if (d) d.close();
+    dir = parentDir(dir);
+    d = SD.open(dir);
+  }
+  if (!d || !d.isDirectory()) return files;
+  for (File f = d.openNextFile(); f; f = d.openNextFile()) {
     String name = f.name();
-    int type = typeOf(name);
-    if (!f.isDirectory() && type >= 0) files.push_back({name, (uint8_t)type, (uint32_t)f.size()});
+    int type = f.isDirectory() ? TYPE_DIR : typeOf(name);
+    if (gpxOnly && type != TYPE_DIR && type != TYPE_GPX) type = -1;
+    if (type >= 0 && !name.startsWith(".")) files.push_back({name, (uint8_t)type, (uint32_t)f.size(), dir});
     f.close();
   }
-  dir.close();
-  // Names start with the date and time, so this sorts by age.
-  std::sort(files.begin(), files.end(), [](const FileInfo& a, const FileInfo& b) { return a.name > b.name; });
+  d.close();
+  std::sort(files.begin(), files.end(), [&](const FileInfo& a, const FileInfo& b) {
+    if ((a.type == TYPE_DIR) != (b.type == TYPE_DIR)) return a.type == TYPE_DIR;
+    if (a.type == TYPE_DIR || !newestFirst) return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
+    return a.name > b.name;
+  });
+  if (dir != "/") files.insert(files.begin(), {"..", TYPE_DIR, 0, dir});
   return files;
 }
 
@@ -36,7 +50,9 @@ String sizeText(uint32_t bytes) {
   return String(bytes / (1024.0f * 1024), 1) + " MB";
 }
 
-String path(const FileInfo& f) { return String(LOG_DIR "/") + f.name; }
+String path(const String& dir, const String& name) { return (dir == "/" ? dir : dir + "/") + name; }
+
+String path(const FileInfo& f) { return path(f.dir, f.name); }
 
 bool remove(const FileInfo& f) { return SD.remove(path(f)); }
 

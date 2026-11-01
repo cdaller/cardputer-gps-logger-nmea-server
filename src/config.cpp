@@ -126,6 +126,7 @@ void configParse(Config& cfg, Stream& f) {
     else if (key == "brightness") cfg.brightness = constrain(n, 8, 255);
     else if (key == "rec_led") cfg.recLed = n != 0;
     else if (key == "map_color") cfg.mapSpeed = val.equalsIgnoreCase("speed");
+    else if (key == "map_overlays") cfg.mapOverlays = val;
     else if (key == "nmea_server") cfg.nmeaServer = n != 0;
     else if (key == "wifi_mode") cfg.wifiClient = val.equalsIgnoreCase("client");
     else if (key.startsWith("wifi_")) {
@@ -190,6 +191,8 @@ String configText(const Config& cfg) {
   f.printf("rec_led=%d\n", cfg.recLed ? 1 : 0);
   f.println("# altitude | speed: color of the track map and the altitude profile (C on the track pages)");
   f.printf("map_color=%s\n", cfg.mapSpeed ? "speed" : "altitude");
+  f.println("# GPX files shown on the maps (O), full paths separated by |");
+  f.printf("map_overlays=%s\n", cfg.mapOverlays.c_str());
   f.println("# 1 = send the GPS NMEA sentences over WiFi (TCP server + UDP broadcast)");
   f.printf("nmea_server=%d\n", cfg.nmeaServer ? 1 : 0);
   f.println("# ap = own WiFi network (ap_ssid/ap_pass), client = join the strongest of up to three");

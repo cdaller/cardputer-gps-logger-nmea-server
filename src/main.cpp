@@ -18,6 +18,7 @@
 #include "logger.h"
 #include "motion.h"
 #include "nmea_server.h"
+#include "overlay.h"
 #include "tracks.h"
 #include "version.h"
 #include "web.h"
@@ -88,7 +89,8 @@ RTC_DATA_ATTR RtcState rtc;
 
 enum Page {
   PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_LIVE_INFO, PAGE_LIVE_MAP, PAGE_GG,
-  PAGE_ACCEL, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP, PAGE_TRACKS, PAGE_TRACK_INFO, PAGE_TRACK_MAP
+  PAGE_ACCEL, PAGE_WIFI, PAGE_MENU, PAGE_SETTINGS, PAGE_HELP, PAGE_TRACKS, PAGE_TRACK_INFO, PAGE_TRACK_MAP,
+  PAGE_OVERLAYS
 };
 
 // Main pages (left / right, number keys) with their sub pages (up / down).
@@ -131,6 +133,7 @@ static int lastDeviceCount = 0;
 static uint32_t lastWifiFailures = 0;
 static Config cfgBeforeEdit;
 static int sdErrors = 0;       // failed point writes in a row
+static String tracksDir = LOG_DIR;  // folder shown on the tracks page
 static std::vector<tracks::FileInfo> trackFiles;
 static int trackSel = 0;
 static bool trackDeleteAsk = false;
@@ -143,6 +146,11 @@ static tracks::Track liveTrack;
 static tracks::LoadState liveState;
 static char liveBase[48] = "";  // liveTrack is from this track
 static uint32_t livePoints = 0, liveReadMs = 0;
+// Map overlays page: GPX files and folders of overlayDir, selected ones are shown on the maps
+static String overlayDir = overlay::DEFAULT_DIR;
+static std::vector<tracks::FileInfo> overlayFiles;
+static int overlaySel = 0;
+static Page overlayReturnPage = PAGE_MAIN;  // own one: it may be opened from a track page
 static uint32_t gpsStandbyMs = 0;     // when the standby command was sent, 0 = GPS on
 static uint32_t gpsStandbyEndMs = 0;  // when the GPS was taken as on again
 static bool gpsStandbyChecked = false;
@@ -1290,6 +1298,8 @@ static String webApplyConfig(const String& lines) {
   return "";
 }
 
+static void loadOverlays();
+
 // Called from loop(): applying in the web request would cut it off with a WiFi restart.
 static void applyWebConfig() {
   if (!webConfigMs || millis() - webConfigMs < WEB_APPLY_DELAY_MS) return;
@@ -1304,6 +1314,7 @@ static void applyWebConfig() {
       cfg.imuFwdLearned != before.imuFwdLearned) {
     motion::setCalibration(cfg.imuUp, cfg.imuFwd, cfg.imuFwdLearned);
   }
+  if (cfg.mapOverlays != before.mapOverlays) loadOverlays();
   showStatus(applyConfig(before));
   if (page == PAGE_WIFI && !cfg.nmeaServer) page = PAGE_MAIN;
 }
@@ -1366,6 +1377,7 @@ static const char* const HELP[][2] = {
   {"G0", "wakes from sleep"},
   {"S", "settings"},
   {"T", "tracks"},
+  {"O", "map overlays"},
   {"H", "help"},
   {"Z", "screen off / sleep"},
   {"Z (off)", "screen on, stays on"},
@@ -1404,7 +1416,7 @@ static void drawHelpPage() {
 
 // ---------------------------------------------------------------- menu
 
-enum MenuId { M_LOGGING, M_SERVER, M_SETTINGS, M_TRACKS, M_HELP, M_SLEEP, M_COUNT };
+enum MenuId { M_LOGGING, M_SERVER, M_SETTINGS, M_TRACKS, M_OVERLAYS, M_HELP, M_SLEEP, M_COUNT };
 
 static void toggleNmeaServer() {
   if (!cfg.nmeaServer && !wifiConfigured()) {
@@ -1447,6 +1459,7 @@ static void drawMenuPage() {
         break;
       case M_SETTINGS: label = "Settings"; col = TFT_CYAN; break;
       case M_TRACKS: label = "Tracks"; col = TFT_GREENYELLOW; break;
+      case M_OVERLAYS: label = "Map overlays"; col = TFT_ORANGE; break;
       case M_HELP: label = "Help / keys"; col = TFT_YELLOW; break;
       case M_SLEEP:
         label = canDeepSleep() && lastLogMs ? "Deep sleep now" : "Screen off";
@@ -1487,7 +1500,10 @@ static void drawTitleBar(const String& title, const char* keys) {
 }
 
 static uint16_t trackTypeColor(uint8_t type) {
-  return type == tracks::TYPE_CSV ? TFT_CYAN : type == tracks::TYPE_GPX ? TFT_YELLOW : TFT_MAGENTA;
+  return type == tracks::TYPE_CSV    ? TFT_CYAN
+         : type == tracks::TYPE_GPX  ? TFT_YELLOW
+         : type == tracks::TYPE_NMEA ? TFT_MAGENTA
+                                     : TFT_LIGHTGREY;
 }
 
 // Local date and time, with the configured UTC offset and daylight saving.
@@ -1549,32 +1565,62 @@ static void drawTrackActions() {
   }
 }
 
-static void drawTracksPage() {
-  drawTitleBar("TRACKS", ";. select Ent actions");
-  int n = trackFiles.size();
+// Last part of a folder path for the title bar, "/" for the root.
+static String dirTitle(const String& dir) {
+  String t = dir == "/" ? dir : dir.substring(dir.lastIndexOf('/') + 1);
+  return t.length() > 12 ? t.substring(0, 11) + "~" : t;
+}
+
+// File list of the tracks and overlays pages, the selection in the middle.
+// checks: a box in front of each GPX file, filled with its color while it
+// is shown on the maps.
+static void drawFileList(const std::vector<tracks::FileInfo>& files, int sel, bool checks) {
+  int n = files.size();
   if (n == 0) {
     canvas.setTextColor(COL_LABEL);
-    canvas.drawString("No tracks on the SD card", 6, 22);
+    canvas.drawString("No files here", 6, 22);
     return;
   }
   const int rows = 7, rowH = 16;
-  int first = constrain(trackSel - rows / 2, 0, max(0, n - rows));
+  int first = constrain(sel - rows / 2, 0, max(0, n - rows));
   for (int i = first; i < min(n, first + rows); i++) {
-    const tracks::FileInfo& f = trackFiles[i];
+    const tracks::FileInfo& f = files[i];
     int y = 20 + (i - first) * rowH;
-    bool sel = i == trackSel;
-    if (sel) canvas.fillRoundRect(0, y, 240, rowH, 3, COL_SEL);
-    canvas.setTextColor(sel ? TFT_WHITE : COL_LABEL);
-    canvas.drawString(f.name.substring(0, f.name.lastIndexOf('.')), 6, y);
+    bool isSel = i == sel, dir = f.type == tracks::TYPE_DIR;
+    if (isSel) canvas.fillRoundRect(0, y, 240, rowH, 3, COL_SEL);
+    int x = 6;
+    if (checks) {
+      if (!dir) {
+        int o = overlay::find(tracks::path(f));
+        if (o >= 0) canvas.fillRect(x, y + 4, 9, 9, overlay::color(o));
+        canvas.drawRect(x, y + 4, 9, 9, isSel ? TFT_WHITE : COL_LABEL);
+      }
+      x += 14;
+    }
+    String name = dir ? f.name : f.name.substring(0, f.name.lastIndexOf('.'));
+    while (name.length() > 1 && x + canvas.textWidth(name) > 126) name.remove(name.length() - 1);
+    canvas.setTextColor(isSel ? TFT_WHITE : COL_LABEL);
+    canvas.drawString(name, x, y);
     canvas.setTextColor(trackTypeColor(f.type));
     canvas.drawString(tracks::TYPE_NAMES[f.type], 130, y);
-    canvas.setTextColor(sel ? TFT_WHITE : COL_LABEL);
+    if (dir) continue;
+    canvas.setTextColor(isSel ? TFT_WHITE : COL_LABEL);
     canvas.setTextDatum(top_right);
     canvas.drawString(tracks::sizeText(f.size), 236, y);
     canvas.setTextDatum(top_left);
   }
+}
+
+static void drawTracksPage() {
+  drawTitleBar(dirTitle(tracksDir), ";. select Ent actions");
+  drawFileList(trackFiles, trackSel, false);
   if (trackAction >= 0) drawTrackActions();
   if (trackDeleteAsk) drawMessageBox(("Delete " + trackFiles[trackSel].name + "? Y / N").c_str());
+}
+
+static void drawOverlaysPage() {
+  drawTitleBar(dirTitle(overlayDir) + "  " + String(overlay::count()) + " on", "Ent on/off , up");
+  drawFileList(overlayFiles, overlaySel, true);
 }
 
 // Large value with a small label in front, like on the position page; returns the right edge.
@@ -1707,22 +1753,24 @@ static void drawTrackInfo(const tracks::Track& t, const MapView& v) {
 }
 
 
-// Pixels per degree latitude that fit the whole track, 0 for a single position.
-static float mapFitScale(const tracks::Track& t, float& cosLat) {
-  cosLat = cos((t.latMin + t.latMax) / 2 * DEG_TO_RAD);
-  float dx = (t.lonMax - t.lonMin) * cosLat, dy = t.latMax - t.latMin;
+static tracks::Bounds trackBounds(const tracks::Track& t) { return {t.latMin, t.latMax, t.lonMin, t.lonMax}; }
+
+// Pixels per degree latitude that fit the bounds, 0 for a single position.
+static float mapFitScale(const tracks::Bounds& b, float& cosLat) {
+  cosLat = cos((b.latMin + b.latMax) / 2 * DEG_TO_RAD);
+  float dx = (b.lonMax - b.lonMin) * cosLat, dy = b.latMax - b.latMin;
   float scale = min(dx > 0 ? MAP_W / dx : INFINITY, dy > 0 ? MAP_H / dy : INFINITY);
   return isinf(scale) ? 0 : scale;
 }
 
 // Zoom and pan keys of a map page, false if the key is none of them.
 // latest: the newest point of the current track, nullptr for a stored track.
-static bool mapKey(MapView& v, const tracks::Track& t, const tracks::Point* latest, char c) {
-  float cosLat, scale = mapFitScale(t, cosLat);
+static bool mapKey(MapView& v, const tracks::Bounds& b, const tracks::Point* latest, char c) {
+  float cosLat, scale = mapFitScale(b, cosLat);
   if (c == '=') {
     if (v.zoom == 1) {  // start at the middle, or at the latest point when following
-      v.lat = (t.latMin + t.latMax) / 2;
-      v.lon = (t.lonMin + t.lonMax) / 2;
+      v.lat = (b.latMin + b.latMax) / 2;
+      v.lon = (b.lonMin + b.lonMax) / 2;
     }
     if (v.zoom < MAP_MAX_ZOOM && scale > 0) v.zoom *= 2;
     return true;
@@ -1755,11 +1803,12 @@ static bool mapKey(MapView& v, const tracks::Track& t, const tracks::Point* late
   return true;
 }
 
-// Track points as lines, colored by altitude or speed; north is up, equal
-// scale in both directions, the whole track fitted into the map at zoom 1.
-static void drawTrackMap(const tracks::Track& t, const MapView& v, const tracks::Point* latest) {
-  float cosLat, scale = mapFitScale(t, cosLat) * v.zoom;
-  float cLat = (t.latMin + t.latMax) / 2, cLon = (t.lonMin + t.lonMax) / 2;
+// Map overlays and the track points as lines on top, colored by altitude or
+// speed; north is up, equal scale in both directions, the bounds fitted into
+// the map at zoom 1. t: nullptr for the current track map without a track.
+static void drawMap(const tracks::Bounds& b, const MapView& v, const tracks::Point* latest, const tracks::Track* t) {
+  float cosLat, scale = mapFitScale(b, cosLat) * v.zoom;
+  float cLat = (b.latMin + b.latMax) / 2, cLon = (b.lonMin + b.lonMax) / 2;
   if (v.zoom > 1 && v.follow && latest) {
     cLat = latest->lat;
     cLon = latest->lon;
@@ -1769,25 +1818,31 @@ static void drawTrackMap(const tracks::Track& t, const MapView& v, const tracks:
   }
   auto px = [&](const tracks::Point& p) { return (int)(MAP_X + MAP_W / 2 + (p.lon - cLon) * cosLat * scale); };
   auto py = [&](const tracks::Point& p) { return (int)(MAP_Y + MAP_H / 2 - (p.lat - cLat) * scale); };
+  overlay::draw(canvas, {cLat, cLon, cosLat * scale, scale, MAP_X + MAP_W / 2, MAP_Y + MAP_H / 2, MAP_X, MAP_Y,
+                         MAP_W, MAP_H});
   canvas.setClipRect(MAP_X, MAP_Y, MAP_W, MAP_H);
-  for (int i = 1; i < t.n; i++) {
-    const tracks::Point &a = t.pts[i - 1], &b = t.pts[i];
-    canvas.drawLine(px(a), py(a), px(b), py(b), pointColor(t, b));
+  if (t) {
+    for (int i = 1; i < t->n; i++) {
+      const tracks::Point &a = t->pts[i - 1], &b = t->pts[i];
+      canvas.drawLine(px(a), py(a), px(b), py(b), pointColor(*t, b));
+    }
+    canvas.fillCircle(px(t->pts[0]), py(t->pts[0]), 3, TFT_GREEN);
   }
-  const tracks::Point &first = t.pts[0], &last = latest ? *latest : t.pts[t.n - 1];
-  canvas.fillCircle(px(first), py(first), 3, TFT_GREEN);
-  canvas.drawCircle(px(last), py(last), 3, TFT_RED);
-  if (v.cursor) {
-    const tracks::Point& c = t.pts[cursorIndex(t, v.cursorTime)];
+  if (latest || t) {
+    const tracks::Point& last = latest ? *latest : t->pts[t->n - 1];
+    canvas.drawCircle(px(last), py(last), 3, TFT_RED);
+  }
+  if (t && v.cursor) {
+    const tracks::Point& c = t->pts[cursorIndex(*t, v.cursorTime)];
     canvas.drawCircle(px(c), py(c), 5, TFT_WHITE);
     canvas.fillCircle(px(c), py(c), 2, TFT_WHITE);
   }
   canvas.clearClipRect();
 
   canvas.setFont(&fonts::Font2);
-  if (v.cursor) {  // the point at the cursor instead of the color legend, zoom only if zoomed
+  if (t && v.cursor) {  // the point at the cursor instead of the color legend, zoom only if zoomed
     canvas.setTextColor(TFT_WHITE);
-    canvas.drawString(cursorText(t, v), 3, 119);
+    canvas.drawString(cursorText(*t, v), 3, 119);
     if (v.zoom > 1) {
       canvas.setTextDatum(top_right);
       canvas.drawString("x" + String(v.zoom), 236, 119);
@@ -1796,17 +1851,21 @@ static void drawTrackMap(const tracks::Track& t, const MapView& v, const tracks:
     return;
   }
 
-  // Color legend: low - high
-  String low = cfg.mapSpeed ? String("0") : String(t.altMin, 0);
-  String high = cfg.mapSpeed ? String(t.spdMax, 0) + " km/h" : String(t.altMax, 0) + " m";
-  canvas.setTextColor(rangeColor(0));
-  canvas.drawString(low, 3, 119);
-  int x = 3 + canvas.textWidth(low);
-  canvas.setTextColor(COL_LABEL);
-  canvas.drawString(" - ", x, 119);
-  x += canvas.textWidth(" - ");
-  canvas.setTextColor(rangeColor(1));
-  canvas.drawString(high, x, 119);
+  if (t) {  // color legend: low - high
+    String low = cfg.mapSpeed ? String("0") : String(t->altMin, 0);
+    String high = cfg.mapSpeed ? String(t->spdMax, 0) + " km/h" : String(t->altMax, 0) + " m";
+    canvas.setTextColor(rangeColor(0));
+    canvas.drawString(low, 3, 119);
+    int x = 3 + canvas.textWidth(low);
+    canvas.setTextColor(COL_LABEL);
+    canvas.drawString(" - ", x, 119);
+    x += canvas.textWidth(" - ");
+    canvas.setTextColor(rangeColor(1));
+    canvas.drawString(high, x, 119);
+  } else {
+    canvas.setTextColor(COL_LABEL);
+    canvas.drawString(!rtc.logging ? "Not logging" : "No points yet", 3, 119);
+  }
   if (scale > 0) {  // width of the map area, 1 degree latitude = 111.32 km
     float km = MAP_W / scale * 111.32f;
     String width = (km < 1 ? String(km * 1000, 0) + " m" : String(km, 1) + " km");
@@ -1826,7 +1885,7 @@ static void drawTrackInfoPage() {
 
 static void drawTrackMapPage() {
   drawTitleBar(trackFiles[trackSel].name, trackView.zoom > 1 ? "` reset" : "=- zoom I info");
-  drawTrackMap(track, trackView, nullptr);
+  drawMap(trackBounds(track), trackView, nullptr, &track);
 }
 
 // Reads the points logged since the last time: from the CSV if written (it has
@@ -1843,19 +1902,50 @@ static void updateLiveTrack() {
   if (rtc.points == livePoints || (livePoints && millis() - liveReadMs < LIVE_READ_MS)) return;
   bool gpx = cfg.logFormat == LOG_GPX;
   tracks::FileInfo f = {String(strrchr(rtc.baseName, '/') + 1) + (gpx ? ".gpx" : ".csv"),
-                        (uint8_t)(gpx ? tracks::TYPE_GPX : tracks::TYPE_CSV), 0};
+                        (uint8_t)(gpx ? tracks::TYPE_GPX : tracks::TYPE_CSV), 0, LOG_DIR};
   tracks::loadMore(f, liveTrack, liveState);
   livePoints = rtc.points;
   liveReadMs = millis();
+}
+
+static bool liveHasTrack() { return rtc.logging && liveTrack.count && strcmp(liveBase, rtc.baseName) == 0; }
+
+// GPS position for the current track map without a track, nullptr without fix.
+static const tracks::Point* gpsPoint() {
+  static tracks::Point p;
+  if (!gps.hasFix()) return nullptr;
+  p = {(float)gps.gps().location.lat(), (float)gps.gps().location.lng(), 0, 0, 0};
+  return &p;
+}
+
+// What the current track map shows: the track being logged, or without one
+// the map overlays and the GPS position. False if there is nothing to show.
+static bool liveMapContent(tracks::Bounds& b, const tracks::Point*& latest) {
+  if (liveHasTrack()) {
+    b = trackBounds(liveTrack);
+    latest = &liveState.prev;
+    return true;
+  }
+  latest = gpsPoint();
+  if (!overlay::bounds(b)) return false;
+  if (latest) {
+    b.latMin = min(b.latMin, latest->lat);
+    b.latMax = max(b.latMax, latest->lat);
+    b.lonMin = min(b.lonMin, latest->lon);
+    b.lonMax = max(b.lonMax, latest->lon);
+  }
+  return true;
 }
 
 static void drawLivePage(bool map) {
   drawTitleBar("CURRENT TRACK", !map ? "C color . map" : liveView.zoom > 1 ? "` reset" : "=- zoom ; info");
   canvas.setFont(&fonts::Font2);
   canvas.setTextColor(COL_LABEL);
-  if (!rtc.logging) canvas.drawString("Not logging - Enter starts", 3, 22);
-  else if (!liveTrack.count || strcmp(liveBase, rtc.baseName) != 0) canvas.drawString("No points yet", 3, 22);
-  else if (map) drawTrackMap(liveTrack, liveView, &liveState.prev);
+  tracks::Bounds b;
+  const tracks::Point* latest;
+  if (map && liveMapContent(b, latest)) drawMap(b, liveView, latest, liveHasTrack() ? &liveTrack : nullptr);
+  else if (!rtc.logging) canvas.drawString("Not logging - Enter starts", 3, 22);
+  else if (!liveHasTrack()) canvas.drawString("No points yet", 3, 22);
   else drawTrackInfo(liveTrack, liveView);
 }
 
@@ -1868,6 +1958,8 @@ static void draw() {
     drawSettingsPage();
   } else if (page == PAGE_TRACKS) {
     drawTracksPage();
+  } else if (page == PAGE_OVERLAYS) {
+    drawOverlaysPage();
   } else if (page == PAGE_TRACK_INFO) {
     drawTrackInfoPage();
   } else if (page == PAGE_TRACK_MAP) {
@@ -2095,9 +2187,22 @@ static void openHelp() {
   page = PAGE_HELP;
 }
 
+// Into the sub folder name of dir, or up for ".."; going up selects the
+// folder that was left. overlays: GPX files only, A-Z; else newest first.
+static void changeDir(String& dir, std::vector<tracks::FileInfo>& files, int& sel, const String& name, bool overlays) {
+  bool up = name == "..";
+  if (up && dir == "/") return;
+  String left = dir.substring(dir.lastIndexOf('/') + 1);
+  dir = up ? tracks::parentDir(dir) : tracks::path(dir, name);
+  files = tracks::list(dir, overlays, !overlays);
+  sel = 0;
+  for (int i = 0; up && i < (int)files.size(); i++)
+    if (files[i].type == tracks::TYPE_DIR && files[i].name == left) sel = i;
+}
+
 static void openTracks() {
   if (!sdOk) { showStatus("No SD card!"); return; }
-  trackFiles = tracks::list();
+  trackFiles = tracks::list(tracksDir, false, true);
   trackSel = 0;
   trackDeleteAsk = false;
   trackAction = -1;
@@ -2121,6 +2226,11 @@ static void openTrack(Page p) {
   page = p;
 }
 
+static void saveOverlays() {
+  cfg.mapOverlays = overlay::paths();
+  if (sdOk) configSave(cfg);
+}
+
 static void askDeleteTrack() {
   if (trackFiles.empty()) return;
   String base = tracks::path(trackFiles[trackSel]);
@@ -2132,15 +2242,70 @@ static void askDeleteTrack() {
 static void deleteTrack() {
   const tracks::FileInfo& f = trackFiles[trackSel];
   if (!tracks::remove(f)) { showStatus("SD error: not deleted"); return; }
+  if (overlay::find(tracks::path(f)) >= 0) {  // no names to read any more
+    overlay::remove(tracks::path(f));
+    saveOverlays();
+  }
   showStatus(("Deleted " + f.name).c_str());
   trackFiles.erase(trackFiles.begin() + trackSel);
   trackSel = min(trackSel, max(0, (int)trackFiles.size() - 1));
 }
 
 static void runTrackAction(int a) {
+  if (trackFiles.empty() || trackFiles[trackSel].type == tracks::TYPE_DIR) return;
   if (a == A_INFO) openTrack(PAGE_TRACK_INFO);
   else if (a == A_MAP) openTrack(PAGE_TRACK_MAP);
   else askDeleteTrack();
+}
+
+// The overlays of the config, at start and after a change on the web page.
+static void loadOverlays() {
+  overlay::clear();
+  if (!sdOk || !cfg.mapOverlays.length()) return;
+  showStatus("Reading map overlays...", 60000);
+  draw();
+  int failed = 0;
+  String msg;
+  for (int from = 0; from < (int)cfg.mapOverlays.length();) {
+    int bar = cfg.mapOverlays.indexOf('|', from);
+    if (bar < 0) bar = cfg.mapOverlays.length();
+    String path = cfg.mapOverlays.substring(from, bar);
+    path.trim();
+    if (path.length() && !overlay::add(path, msg)) failed++;
+    from = bar + 1;
+  }
+  statusMsgUntil = 0;
+  if (failed) showStatus((String(failed) + " overlay(s) not loaded").c_str(), 4000);
+}
+
+static void toggleOverlay(const String& path) {
+  if (overlay::find(path) >= 0) {
+    overlay::remove(path);
+    saveOverlays();
+    return;
+  }
+  showStatus("Reading GPX file...", 60000);
+  draw();
+  String msg;
+  bool ok = overlay::add(path, msg);
+  statusMsgUntil = 0;
+  if (ok) saveOverlays();
+  if (msg.length()) showStatus(msg.c_str(), 4000);
+}
+
+static void openOverlays() {
+  if (!sdOk) { showStatus("No SD card!"); return; }
+  SD.mkdir(overlay::DEFAULT_DIR);
+  overlayFiles = tracks::list(overlayDir, true, false);
+  overlaySel = 0;
+  overlayReturnPage = page;
+  page = PAGE_OVERLAYS;
+}
+
+static void closeOverlays() {
+  page = overlayReturnPage;
+  overlayFiles.clear();
+  overlayFiles.shrink_to_fit();
 }
 
 static void menuSelect(int id) {
@@ -2149,6 +2314,7 @@ static void menuSelect(int id) {
     case M_SERVER: toggleNmeaServer(); break;
     case M_SETTINGS: openSettings(); break;
     case M_TRACKS: openTracks(); break;
+    case M_OVERLAYS: openOverlays(); break;
     case M_HELP: openHelp(); break;
     case M_SLEEP: sleepNowIfPossible(); break;
   }
@@ -2173,6 +2339,18 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     else page = returnPage;
     return;
   }
+  if (page == PAGE_OVERLAYS) {
+    int n = overlayFiles.size();
+    const tracks::FileInfo* f = n ? &overlayFiles[overlaySel] : nullptr;
+    if (c == ';' && n) overlaySel = (overlaySel + n - 1) % n;
+    else if (c == '.' && n) overlaySel = (overlaySel + 1) % n;
+    else if (f && f->type == tracks::TYPE_DIR && (enter || c == '/')) changeDir(overlayDir, overlayFiles, overlaySel, f->name, true);
+    else if (f && (enter || c == ' ')) toggleOverlay(tracks::path(*f));
+    else if (c == ',') changeDir(overlayDir, overlayFiles, overlaySel, "..", true);
+    else if (c == 'x') { overlay::clear(); saveOverlays(); showStatus("All overlays off"); }
+    else if (c == '`' || del) closeOverlays();
+    return;
+  }
   if (page == PAGE_TRACKS) {
     int n = trackFiles.size();
     int shortcut = c == 'i' ? A_INFO : c == 'm' ? A_MAP : c == 'd' ? A_DELETE : -1;
@@ -2189,15 +2367,19 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
       }
     } else if (c == ';' && n) trackSel = (trackSel + n - 1) % n;
     else if (c == '.' && n) trackSel = (trackSel + 1) % n;
+    else if (n && trackFiles[trackSel].type == tracks::TYPE_DIR && (enter || c == '/'))
+      changeDir(tracksDir, trackFiles, trackSel, trackFiles[trackSel].name, false);
+    else if (c == ',') changeDir(tracksDir, trackFiles, trackSel, "..", false);
     else if (enter && n) trackAction = A_INFO;
     else if (shortcut >= 0) runTrackAction(shortcut);
     else if (c == '`' || del) page = returnPage;
     return;
   }
   if ((page == PAGE_TRACK_INFO || page == PAGE_TRACK_MAP) && cursorKey(trackView, track, c)) return;
-  if (page == PAGE_TRACK_MAP && mapKey(trackView, track, nullptr, c)) return;
+  if (page == PAGE_TRACK_MAP && mapKey(trackView, trackBounds(track), nullptr, c)) return;
   if (page == PAGE_TRACK_INFO || page == PAGE_TRACK_MAP) {
     if (c == 'c') toggleMapColor();
+    else if (c == 'o') openOverlays();
     else if (c == 'i') page = PAGE_TRACK_INFO;
     else if (c == 'm') page = PAGE_TRACK_MAP;
     else if (c == ';' || c == '.') page = page == PAGE_TRACK_INFO ? PAGE_TRACK_MAP : PAGE_TRACK_INFO;
@@ -2222,8 +2404,10 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
     if (c == 'x') { motion::resetMax(); showStatus("Max values reset"); return; }
   }
   bool livePage = page == PAGE_LIVE_INFO || page == PAGE_LIVE_MAP;
-  if (livePage && liveTrack.count && cursorKey(liveView, liveTrack, c)) return;
-  if (page == PAGE_LIVE_MAP && liveTrack.count && mapKey(liveView, liveTrack, &liveState.prev, c)) return;
+  if (livePage && liveHasTrack() && cursorKey(liveView, liveTrack, c)) return;
+  tracks::Bounds liveBounds;
+  const tracks::Point* latest;
+  if (page == PAGE_LIVE_MAP && liveMapContent(liveBounds, latest) && mapKey(liveView, liveBounds, latest, c)) return;
   if (page == PAGE_LIVE_INFO || page == PAGE_LIVE_MAP) {
     if (c == 'c') { toggleMapColor(); return; }
     if (c == 'i' || c == 'm') {
@@ -2246,6 +2430,7 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
   else if (c == '.') nextSubPage(+1);
   else if (c == 's') openSettings();
   else if (c == 't') openTracks();
+  else if (c == 'o') openOverlays();
   else if (c == 'h') openHelp();
   else if (c == 'z') sleepNowIfPossible();
   else if (c == 'p') saveScreenshot();
@@ -2287,6 +2472,7 @@ static void handleInput() {
       else if (page == PAGE_TRACKS && trackDeleteAsk) trackDeleteAsk = false;
       else if (page == PAGE_TRACKS && trackAction >= 0) trackAction = -1;
       else if (page == PAGE_TRACKS) page = returnPage;
+      else if (page == PAGE_OVERLAYS) closeOverlays();
       else if (page == PAGE_TRACK_INFO || page == PAGE_TRACK_MAP) page = PAGE_TRACKS;
       else nextPageFlat();
     }
@@ -2361,6 +2547,7 @@ void setup() {
     showStatus("WiFi incomplete: server off", 4000);
   }
   if (cfg.nmeaServer) nmeaserver::begin(cfg);
+  loadOverlays();  // after the WiFi start: it leaves its memory free
 
   if (!sdOk) showStatus("No SD card!", 4000);
   else if (!fromSleep && cfg.autoStart) startLogging();

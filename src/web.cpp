@@ -1,8 +1,10 @@
 #include "web.h"
+#include "logger.h"
 #include "tracks.h"
 #include "version.h"
 #include <SD.h>
 #include <WebServer.h>
+#include <algorithm>
 
 static WebServer server(80);
 static bool isRunning = false;
@@ -55,6 +57,17 @@ static String urlEncode(const String& s) {
   return out;
 }
 
+// Track files of the log folder, without sub folders.
+static std::vector<tracks::FileInfo> logFiles() {
+  String dir = LOG_DIR;
+  std::vector<tracks::FileInfo> files = tracks::list(dir, false, true);
+  if (dir != LOG_DIR) files.clear();  // no log folder yet
+  files.erase(std::remove_if(files.begin(), files.end(),
+                             [](const tracks::FileInfo& f) { return f.type == tracks::TYPE_DIR; }),
+              files.end());
+  return files;
+}
+
 static void handleIndex() {
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200, "text/html; charset=utf-8", "");
@@ -62,7 +75,7 @@ static void handleIndex() {
   server.sendContent("<h2>GPS</h2><table id=\"gps\">");
   if (statusHtml) server.sendContent(statusHtml());
   server.sendContent("</table><h2>Tracks</h2>");
-  std::vector<tracks::FileInfo> files = tracks::list();
+  std::vector<tracks::FileInfo> files = logFiles();
   if (files.empty()) {
     server.sendContent("<p>No tracks on the SD card.</p>");
   } else {
@@ -89,7 +102,7 @@ static void handleStatus() {
 static void handleDownload() {
   static const char* const TYPES[] = {"text/csv", "application/gpx+xml", "text/plain"};
   String name = server.arg("f");
-  for (const tracks::FileInfo& f : tracks::list()) {
+  for (const tracks::FileInfo& f : logFiles()) {
     if (f.name != name) continue;
     File file = SD.open(tracks::path(f));
     if (!file) break;

@@ -3,18 +3,23 @@
 #include <time.h>
 #include <vector>
 
-// Track files on the SD card: listing, deleting and reading them back for
-// the info and map pages. Only CSV and GPX files can be read, NMEA files
-// are listed and deleted only.
+// Track files on the SD card: listing folders, deleting and reading them
+// back for the info and map pages. Only CSV and GPX files can be read, NMEA
+// files are listed and deleted only.
 namespace tracks {
 
-enum Type : uint8_t { TYPE_CSV, TYPE_GPX, TYPE_NMEA };
-extern const char* const TYPE_NAMES[3];
+enum Type : uint8_t { TYPE_CSV, TYPE_GPX, TYPE_NMEA, TYPE_DIR };
+extern const char* const TYPE_NAMES[4];
 
 struct FileInfo {
-  String name;  // with extension, without directory
+  String name;  // with extension, without directory; ".." for the parent folder
   uint8_t type;
   uint32_t size;
+  String dir;   // folder it is in, "/" = root
+};
+
+struct Bounds {
+  float latMin, latMax, lonMin, lonMax;
 };
 
 // Long tracks are thinned out evenly to this many points.
@@ -37,9 +42,15 @@ struct Track {
   Point pts[MAX_POINTS];
 };
 
-std::vector<FileInfo> list();  // newest first
+// Sub folders (".." first, except in the root) and track files of dir, by
+// name; files newest first (track names start with date and time) or A-Z.
+// gpxOnly: no CSV and NMEA files. A dir that can't be opened is replaced by
+// its nearest parent that can.
+std::vector<FileInfo> list(String& dir, bool gpxOnly, bool newestFirst);
+String parentDir(const String& dir);  // "/" for the root
 String sizeText(uint32_t bytes);  // "512 B", "12.3 KB", "1.2 MB"
 String path(const FileInfo& f);
+String path(const String& dir, const String& name);
 bool remove(const FileInfo& f);
 bool load(const FileInfo& f, Track& t);  // false if not readable or no points
 
