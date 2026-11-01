@@ -3,6 +3,9 @@
 
 // Accelerometer of the Cardputer ADV (BMI270; v1.x has no IMU).
 //
+// Gravity is tracked with the gyroscope, so slopes and body tilt don't show
+// as acceleration; the gyroscope's offset is measured whenever the device is still.
+//
 // Stillness: spread of the acceleration over 1 s windows. Car / bike / plane
 // readings: longitudinal (+ = accelerating, - = braking), lateral
 // (+ = to the right) and vertical (+ = up) acceleration in g, without gravity,
@@ -51,6 +54,11 @@ void resetMax();            // also the peaks for the track points
 float envelope(int sector);  // max total g per direction, sector 0 = forward, clockwise
 int historyCount();
 Sample historyAt(int i);     // 0 = oldest
+float lonBias();             // remaining error of lonG(), learned from the GPS speed (g)
+// Gyroscope, after its offset was measured standing still once
+bool gyroAvailable();
+float yawRate();             // deg/s, + = turning right
+float pitchSin();            // sine of the slope, + = nose up; 0 until forward is learned
 // Peaks since the last call, for the track points (g, >= 0)
 void takePeaks(float& accel, float& brake, float& lat, float& up, float& down);
 

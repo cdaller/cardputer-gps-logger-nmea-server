@@ -10,6 +10,7 @@ struct LogPoint {
   int8_t batteryPct;
   bool hasAccel;                   // peaks since the previous point, g
   float accelG, brakeG, latG, upG, downG;
+  bool dr;                         // estimated by dead reckoning, no GPS fix
 };
 
 #define LOG_DIR "/gpslogger/tracks"

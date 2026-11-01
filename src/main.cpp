@@ -14,6 +14,7 @@
 #include <time.h>
 
 #include "config.h"
+#include "deadreckon.h"
 #include "gps.h"
 #include "logger.h"
 #include "motion.h"
@@ -319,6 +320,34 @@ static bool buildPoint(LogPoint& p, int batteryPct) {
   p.sats = g.satellites.isValid() ? g.satellites.value() : 0;
   p.batteryPct = batteryPct;
   p.hasAccel = false;
+  p.dr = false;
+  return true;
+}
+
+static bool drEnabled() { return cfg.deadReckoning && deadreckon::active(); }
+
+// The dead reckoning estimate as point, once per second.
+static bool buildDrPoint(LogPoint& p, int batteryPct) {
+  static time_t lastUtc = 0;
+  const deadreckon::Estimate& e = deadreckon::estimate();
+  if (e.utc == lastUtc) return false;
+  lastUtc = e.utc;
+  struct tm t;
+  gmtime_r(&e.utc, &t);
+  p = {};
+  p.year = t.tm_year + 1900;
+  p.month = t.tm_mon + 1;
+  p.day = t.tm_mday;
+  p.hour = t.tm_hour;
+  p.minute = t.tm_min;
+  p.second = t.tm_sec;
+  p.lat = e.lat;
+  p.lon = e.lon;
+  p.altM = e.altM;
+  p.speedKmh = e.speedKmh;
+  p.courseDeg = e.courseDeg;
+  p.batteryPct = batteryPct;
+  p.dr = true;
   return true;
 }
 
@@ -342,7 +371,7 @@ static bool isKeyPoint(const LogPoint& p, double distM, uint64_t now) {
 
 // Whether a new fix is recorded. Time mode only gets here when the interval is due.
 static LogResult filterPoint(const LogPoint& p) {
-  if (p.hdop <= 0 || p.hdop > MAX_HDOP) return LOG_SKIPPED;
+  if (!p.dr && (p.hdop <= 0 || p.hdop > MAX_HDOP)) return LOG_SKIPPED;
   uint64_t now = rtcNowMs();
   double distM = rtc.hasLast ? TinyGPSPlus::distanceBetween(rtc.lastLat, rtc.lastLon, p.lat, p.lon) : 0;
   if (!cfg.autoPause) {
@@ -367,15 +396,53 @@ static LogResult filterPoint(const LogPoint& p) {
   }
 }
 
+// Dead reckoned points wait in RAM until the fix is back, so they can be
+// corrected by the error of the estimate; written as they are when logging
+// stops, before deep sleep or when too many.
+static const size_t DR_BUF_MAX = 200;
+static std::vector<LogPoint> drBuf;
+
+static bool flushDr(bool corrected) {
+  const deadreckon::Correction& c = deadreckon::correction();
+  bool ok = true;
+  for (LogPoint p : drBuf) {
+    if (corrected && c.to > c.from) {
+      struct tm t = {};
+      t.tm_year = p.year - 1900;
+      t.tm_mon = p.month - 1;
+      t.tm_mday = p.day;
+      t.tm_hour = p.hour;
+      t.tm_min = p.minute;
+      t.tm_sec = p.second;
+      float f = constrain((float)(mktime(&t) - c.from) / (c.to - c.from), 0.0f, 1.0f);
+      p.lat += c.dLat * f;
+      p.lon += c.dLon * f;
+      p.altM += c.dAlt * f;
+    }
+    if (logger::write(p, cfg.logFormat, rtc.baseName, sizeof(rtc.baseName))) rtc.points++;
+    else ok = false;
+  }
+  drBuf.clear();
+  drBuf.shrink_to_fit();
+  return ok;
+}
+
 static LogResult logPoint(int batteryPct) {
   LogPoint p;
-  if (!buildPoint(p, batteryPct)) return LOG_NO_FIX;
+  if (!buildPoint(p, batteryPct) && !(drEnabled() && buildDrPoint(p, batteryPct))) return LOG_NO_FIX;
   LogResult result = filterPoint(p);
   if (result != LOG_OK) return result;
   p.hasAccel = motion::calibrated();
   if (p.hasAccel) motion::takePeaks(p.accelG, p.brakeG, p.latG, p.upG, p.downG);
-  if (!logger::write(p, cfg.logFormat, rtc.baseName, sizeof(rtc.baseName))) return LOG_SD_ERROR;
-  rtc.points++;
+  if (p.dr) {
+    if (drBuf.size() >= DR_BUF_MAX && !flushDr(false)) return LOG_SD_ERROR;
+    if (drBuf.empty()) drBuf.reserve(DR_BUF_MAX);  // once, no growing in steps
+    drBuf.push_back(p);
+  } else {
+    if (!drBuf.empty() && !flushDr(false)) return LOG_SD_ERROR;  // fix back without correction
+    if (!logger::write(p, cfg.logFormat, rtc.baseName, sizeof(rtc.baseName))) return LOG_SD_ERROR;
+    rtc.points++;
+  }
   rtc.hasLast = true;
   rtc.lastLat = p.lat;
   rtc.lastLon = p.lon;
@@ -401,6 +468,7 @@ static void startLogging() {
   rtc.hasLast = false;
   rtc.paused = false;
   rtc.stillSinceMs = 0;
+  drBuf.clear();
   lastLogMs = 0;
   ledStartMs = millis();
   motion::resetMax();
@@ -408,6 +476,7 @@ static void startLogging() {
 }
 
 static void stopLogging() {
+  if (!drBuf.empty() && sdOk) flushDr(false);
   if (rtc.baseName[0]) logger::nmeaFlush(rtc.baseName);  // also empties the buffer on SD errors
   rtc.logging = false;
   showStatus("Logging stopped");
@@ -461,6 +530,7 @@ static void updateGpsStandby() {
 
 [[noreturn]] static void enterDeepSleep(uint32_t sleepMs, bool displayActive) {
   gps.end();
+  if (sdOk && !drBuf.empty()) flushDr(false);  // the estimate doesn't survive sleeping
   if (sdOk && rtc.baseName[0]) logger::nmeaFlush(rtc.baseName);
   SD.end();
   if (displayActive) {  // M5 is set up: not in a quiet wake-up
@@ -608,6 +678,10 @@ static void drawStatusBar() {
   } else if (!gpsAlive) {
     sat = "NO GPS";
     satCol = TFT_RED;
+  } else if (!gps.hasFix() && drEnabled()) {
+    sat = "DR";
+    satCol = TFT_ORANGE;
+    satCount = " " + String(deadreckon::seconds()) + "s";
   } else {
     bool fix = gps.hasFix();
     sat = fix ? "FIX" : "NO FIX";
@@ -1091,7 +1165,7 @@ enum SettingId {
   S_LOGMODE, S_INTERVAL, S_DISTANCE, S_AUTOPAUSE, S_FORMAT, S_NMEA, S_SERIAL, S_SLEEP, S_SCREEN, S_FIXTO,
   S_MODULE, S_RX, S_TX, S_BAUD, S_STANDBY,
   S_SERVER, S_WIFIMODE, S_PORT, S_SSID, S_PASS, S_SSID2, S_PASS2, S_SSID3, S_PASS3, S_APSSID, S_APPASS,
-  S_TZ, S_DST, S_AUTOSTART, S_BRIGHT, S_RECLED, S_CUES, S_COUNT
+  S_TZ, S_DST, S_AUTOSTART, S_BRIGHT, S_RECLED, S_CUES, S_DR, S_COUNT
 };
 static const char* const SETTING_NAMES[S_COUNT] = {
   "Log mode", "Log interval", "Log distance", "Auto pause", "Log format", "NMEA log", "NMEA serial", "Deep sleep",
@@ -1099,7 +1173,7 @@ static const char* const SETTING_NAMES[S_COUNT] = {
   "GPS RX pin", "GPS TX pin", "GPS baud", "GPS standby", "NMEA server", "WiFi mode", "NMEA port",
   "WiFi 1 SSID", "WiFi 1 password", "WiFi 2 SSID", "WiFi 2 password", "WiFi 3 SSID", "WiFi 3 password",
   "AP name", "AP password", "Time zone", "Summer time", "Auto start", "Brightness",
-  "Recording LED", "Motion cues",
+  "Recording LED", "Motion cues", "Dead reckoning",
 };
 static const uint32_t INTERVALS[] = {1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600};
 static const uint32_t DISTANCES[] = {5, 10, 20, 50, 100, 200, 500, 1000};
@@ -1183,6 +1257,12 @@ static String settingValue(int id) {
       if (!cfg.motionCues) return "off";
       if (!motion::available()) return "on (no IMU)";
       return motion::calibrated() ? "on" : "on (calibrate)";
+    case S_DR:
+      if (!cfg.deadReckoning) return "off";
+      if (!motion::available()) return "on (no IMU)";
+      if (!motion::calibrated()) return "on (calibrate)";
+      if (!motion::forwardLearned()) return "on (learning)";
+      return motion::gyroAvailable() ? "on" : "on (stand still)";
     case S_SERVER: return cfg.nmeaServer ? "on" : "off";
     case S_WIFIMODE: return cfg.wifiClient ? "client" : "own AP";
     case S_PORT: return String(cfg.nmeaPort);
@@ -1284,6 +1364,7 @@ static void changeSetting(int id, int dir) {
     case S_AUTOSTART: cfg.autoStart = !cfg.autoStart; break;
     case S_RECLED: cfg.recLed = !cfg.recLed; break;
     case S_CUES: cfg.motionCues = !cfg.motionCues; break;
+    case S_DR: cfg.deadReckoning = !cfg.deadReckoning; break;
     case S_SERVER: cfg.nmeaServer = !cfg.nmeaServer; break;
     case S_WIFIMODE: cfg.wifiClient = !cfg.wifiClient; break;
     case S_BRIGHT:
@@ -2291,6 +2372,29 @@ static void saveImuCalibration() {
   if (sdOk) configSave(cfg);
 }
 
+// C starts a calibration that waits until the device has been still for
+// CAL_STILL_MS, at most CAL_WAIT_MS: time to put it into its place.
+static const uint32_t CAL_STILL_MS = 2000;
+static const uint32_t CAL_WAIT_MS = 30000;
+static uint32_t calStartMs = 0;  // 0 = no calibration waiting
+
+static void updateCalibration() {
+  if (!calStartMs) return;
+  uint32_t waited = millis() - calStartMs;
+  if (motion::stillMs() >= CAL_STILL_MS && motion::calibrate()) {
+    calStartMs = 0;
+    saveImuCalibration();
+    showStatus("Calibrated, now drive");
+  } else if (waited >= CAL_WAIT_MS) {
+    calStartMs = 0;
+    showStatus("Not still - try again");
+  } else {
+    char msg[40];
+    snprintf(msg, sizeof(msg), "Calibrating when still %lus", (unsigned long)(CAL_WAIT_MS - waited + 999) / 1000);
+    showStatus(msg, 300);
+  }
+}
+
 static void openHelp() {
   helpFirst = 0;
   returnPage = page;
@@ -2503,12 +2607,7 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
   }
   if (page == PAGE_GG || page == PAGE_ACCEL) {
     if (c == 'c') {
-      if (motion::calibrate()) {
-        saveImuCalibration();
-        showStatus("Calibrated, now drive");
-      } else {
-        showStatus("Not still - try again");
-      }
+      calStartMs = millis() | 1;
       return;
     }
     if (c == 'x') { motion::resetMax(); showStatus("Max values reset"); return; }
@@ -2681,6 +2780,17 @@ static void feedMotion() {
     saveImuCalibration();
     showStatus("Forward direction learned");
   }
+  if (!g.location.isValid() || !g.hdop.isValid() || g.hdop.hdop() > MAX_HDOP || !g.date.isValid()) return;
+  struct tm t = {};
+  t.tm_year = g.date.year() - 1900;
+  t.tm_mon = g.date.month() - 1;
+  t.tm_mday = g.date.day();
+  t.tm_hour = g.time.hour();
+  t.tm_min = g.time.minute();
+  t.tm_sec = g.time.second();
+  bool gapEstimated = deadreckon::fix(g.location.lat(), g.location.lng(), g.altitude.isValid() ? g.altitude.meters() : 0,
+                                      g.speed.kmph(), g.course.isValid() ? g.course.deg() : 0, mktime(&t));
+  if (gapEstimated && !drBuf.empty() && sdOk) flushDr(true);
 }
 
 // Red pulse while logging, brightness squared for an even looking fade.
@@ -2714,9 +2824,11 @@ static void updateRecLed() {
 void loop() {
   M5.update();
   motion::update();
+  deadreckon::update(gps.hasFix());
   gps.update();
   if (gps.baudLocked() && cfg.gpsBaud == 0) rtc.detectedBaud = gps.baud();
   feedMotion();
+  updateCalibration();
   sendAccelXdr();
   updateGpsStandby();
   updateRecLed();

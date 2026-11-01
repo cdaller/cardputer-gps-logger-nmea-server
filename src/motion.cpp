@@ -19,6 +19,15 @@ static const float LEARN_MIN_KMH = 5;
 static const uint32_t LEARN_MIN_DT_MS = 500;
 static const uint32_t LEARN_MAX_DT_MS = 2000;
 static const int LEARN_COUNT = 8;
+// Gravity follows the device's rotation (gyroscope). It is pulled toward the
+// measured acceleration minus the vehicle's own acceleration (from the GPS
+// speed changes and the turn rate) within GRAV_TAU_S, while the GPS speed is
+// recent and forward is learned; toward the mean of a still 1 s window at once. Without GPS (tunnel)
+// it follows the gyroscope only.
+static const float GRAV_TAU_S = 5;
+static const uint32_t GPS_RECENT_MS = 2500;
+static const float MAX_DT_S = 0.2f;      // longer gaps between readings are not integrated
+static const float LON_BIAS_SMOOTH = 0.1f;  // learning of the remaining lon error per GPS fix
 
 struct Vec {
   float x, y, z;
@@ -32,9 +41,10 @@ struct Vec {
 };
 
 static bool hasImu = false;
+static bool hasGyro = false;
 
 // 1 s window: sums for mean and spread
-static Vec winSum, winSq;
+static Vec winSum, winSq, winGyro;
 static int winN = 0;
 static uint32_t winStartMs = 0;
 static Vec lastMean;
@@ -43,6 +53,16 @@ static bool lastWindowStill = false;
 static bool isStill = false;
 static uint32_t stillSinceMs = 0;
 static Vec stillMean;
+
+// Gyroscope (deg/s) and gravity as the device sees it now (g, pointing up)
+static Vec gyroBias, gyroNow;
+static bool gyroBiasKnown = false;
+static Vec grav;
+static uint32_t lastReadUs = 0;
+static float gpsDvG = 0;          // vehicle acceleration from the last two GPS speeds
+static float gpsMps = 0;
+static uint32_t gpsMs = 0;        // when they came, 0 = never
+static float lonBiasG = 0;
 
 // 100 ms sample
 static Vec sampSum;
@@ -81,7 +101,7 @@ static void clearReadings() {
 }
 
 static void addSample(const Vec& a) {
-  Vec lin = a - up;
+  Vec lin = a - (hasGyro && gyroBiasKnown ? grav : up);  // until then the gyroscope drifts
   Vec h = horizontal(lin);
   fixSum = fixSum + h;
   fixN++;
@@ -117,6 +137,14 @@ static void finishWindow(uint32_t now) {
   lastVib = sqrtf(max(0.0f, var.x + var.y + var.z));
   lastMean = mean;
   lastWindowStill = lastVib < STILL_G;
+  if (lastWindowStill) {
+    grav = mean;
+    if (hasGyro) {
+      Vec g = winGyro * (1.0f / winN);
+      gyroBias = gyroBiasKnown ? gyroBias + (g - gyroBias) * 0.5f : g;
+      gyroBiasKnown = true;
+    }
+  }
   if (isStill && (lastVib > MOVE_G || (mean - stillMean).len() > SHIFT_G)) {
     isStill = false;
   } else if (!isStill && lastWindowStill) {
@@ -128,8 +156,21 @@ static void finishWindow(uint32_t now) {
 
 namespace motion {
 
+// Turns gravity with the device and pulls it toward what the accelerometer
+// would read without the vehicle's acceleration.
+static void trackGravity(const Vec& a, const Vec& gyro, float dt) {
+  Vec w = (gyro - gyroBias) * DEG_TO_RAD;
+  grav = grav - w.cross(grav) * dt;  // fixed in the world, so it turns against the device
+  // Not before forward is learned: that would pull out the acceleration it is learned from
+  if (!isLearned || !gpsMs || millis() - gpsMs > GPS_RECENT_MS) return;
+  float yaw = w.dot(grav.norm());  // rad/s, + = left
+  Vec vehicle = fwd * gpsDvG - right * (gpsMps * yaw / 9.81f);
+  grav = grav + (a - vehicle - grav) * min(dt / GRAV_TAU_S, 1.0f);
+}
+
 bool begin() {
   hasImu = M5.Imu.isEnabled();
+  hasGyro = hasImu && (M5.Imu.getType() == m5::imu_t::imu_bmi270);
   winStartMs = sampStartMs = millis();
   return hasImu;
 }
@@ -138,9 +179,18 @@ bool available() { return hasImu; }
 
 void update() {
   if (!hasImu || !M5.Imu.update()) return;
-  Vec a;
-  if (!M5.Imu.getAccel(&a.x, &a.y, &a.z)) return;
+  const auto& d = M5.Imu.getImuData();
+  Vec a = {d.accel.x, d.accel.y, d.accel.z};
   uint32_t now = millis();
+  uint32_t us = micros();
+  float dt = (us - lastReadUs) / 1e6f;
+  lastReadUs = us;
+  if (hasGyro) {
+    gyroNow = {d.gyro.x, d.gyro.y, d.gyro.z};
+    winGyro = winGyro + gyroNow;
+    if (grav.len() < 0.5f) grav = a;  // first reading
+    else if (dt <= MAX_DT_S) trackGravity(a, gyroNow, dt);
+  }
   winSum = winSum + a;
   winSq = winSq + Vec{a.x * a.x, a.y * a.y, a.z * a.z};
   winN++;
@@ -154,7 +204,7 @@ void update() {
   }
   if (now - winStartMs >= WINDOW_MS) {
     finishWindow(now);
-    winSum = winSq = {};
+    winSum = winSq = winGyro = {};
     winN = 0;
     winStartMs = now;
   }
@@ -168,6 +218,8 @@ bool calibrate() {
   if (!hasImu || !lastWindowStill) return false;
   up = lastMean;
   upN = up.norm();
+  grav = up;
+  lonBiasG = 0;
   // Until it is learned, forward is the device axis closest to horizontal
   Vec axes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
   Vec best = axes[0];
@@ -190,6 +242,7 @@ void setCalibration(const float u[3], const float f[3], bool fwdLearned) {
   up = {u[0], u[1], u[2]};
   if (up.len() < 0.5f) return;  // not calibrated
   upN = up.norm();
+  grav = up;
   setFwd({f[0], f[1], f[2]});
   isCal = fwd.len() > 0.5f;
   isLearned = isCal && fwdLearned;
@@ -207,9 +260,15 @@ bool gpsSpeed(float kmh, uint32_t ms) {
   if (!isCal) return false;
   bool learnedNow = false;
   uint32_t dt = ms - prevKmhMs;
-  if (prevKmh >= 0 && fixN && dt >= LEARN_MIN_DT_MS && dt <= LEARN_MAX_DT_MS &&
-      max(kmh, prevKmh) >= LEARN_MIN_KMH) {
-    float dvG = (kmh - prevKmh) / 3.6f / (dt / 1000.0f) / 9.81f;
+  bool interval = prevKmh >= 0 && fixN && dt >= LEARN_MIN_DT_MS && dt <= LEARN_MAX_DT_MS;
+  float dvG = interval ? (kmh - prevKmh) / 3.6f / (dt / 1000.0f) / 9.81f : 0;
+  gpsDvG = dvG;
+  gpsMps = kmh / 3.6f;
+  gpsMs = ms | 1;
+  // What the longitudinal reading is off, for the speed in the dead reckoning
+  if (interval && isLearned && kmh >= LEARN_MIN_KMH)
+    lonBiasG += ((fixSum * (1.0f / fixN)).dot(fwd) - dvG - lonBiasG) * LON_BIAS_SMOOTH;
+  if (interval && max(kmh, prevKmh) >= LEARN_MIN_KMH) {
     if (fabsf(dvG) >= LEARN_MIN_G) {
       learnSum = learnSum + fixSum * (dvG / fixN);
       if (++learnN >= LEARN_COUNT && horizontal(learnSum).len() > 0) {
@@ -230,6 +289,15 @@ bool gpsSpeed(float kmh, uint32_t ms) {
 }
 
 float lonG() { return curLon; }
+float lonBias() { return lonBiasG; }
+bool gyroAvailable() { return hasGyro && gyroBiasKnown; }
+
+float yawRate() {
+  if (!gyroAvailable()) return 0;
+  return -(gyroNow - gyroBias).dot(grav.norm());  // + = right, clockwise like the compass
+}
+
+float pitchSin() { return isLearned ? constrain(grav.norm().dot(fwd), -1.0f, 1.0f) : 0; }
 float latG() { return curLat; }
 float vertG() { return curVert; }
 const Maxima& maxima() { return maxv; }

@@ -33,6 +33,9 @@ Cardputer v1.x).
   last 24 s; longitudinal (accelerate / brake), lateral (left / right) and vertical (up /
   down) in g, for cars, bikes or planes; max values reset with
   `X` and at each new track. See [Acceleration](#acceleration)
+- Dead reckoning (Cardputer ADV): without GPS fix, e.g. in tunnels, the track is continued
+  from accelerometer and gyroscope and corrected when the fix is back, see
+  [Dead reckoning](#dead-reckoning)
 - Menu page: start/stop logging, start/stop NMEA server, settings, tracks, map overlays, help,
   screen off / deep sleep - no need to remember key letters
 - Tracks page: the track files with type and size, newest first, starting in
@@ -243,6 +246,7 @@ ap_pass=k7rmx2qhwa        # random on first start; empty = open network, else mi
 nmea_port=2000            # TCP server and UDP broadcast port
 gps_standby=0             # 1 = GPS to standby while not moving (Cardputer ADV)
 motion_cues=0             # 1 = dots at the screen edges move with the acceleration (Cardputer ADV)
+dead_reckoning=1          # 1 = estimated track points without GPS fix, e.g. in tunnels (Cardputer ADV)
 imu_up=0,0,0              # accelerometer calibration, set with C on the acceleration pages
 imu_fwd=0,0,0
 imu_fwd_learned=0
@@ -363,7 +367,9 @@ So points are filtered before they are written:
 
 The Cardputer ADV has an accelerometer (BMI270); v1.x has none, there the two pages are
 left out. To measure in a car, fix the Cardputer (e.g. on the dashboard, any tilt), stand
-still and press `C` on the g-g or chart page: this measures which way is up. Forward is then
+still and press `C` on the g-g or chart page: this measures which way is up. It waits up to
+30 s until the Cardputer has been still for 2 s, so there is time to put it into its place
+(holder, box) after pressing `C`. Forward is then
 learned from the GPS while driving: the acceleration that goes along with the speed changes
 points forward. Until that happened (a few speed-ups / brakings, the pages show
 `learning fwd`) longitudinal and lateral are mixed up. The calibration is stored in
@@ -380,13 +386,44 @@ Values are 100 ms averages, smoothed, without gravity:
 * **Chart**: lon (cyan), lat (yellow) and vertical (magenta) of the last 24 s; below it the
   max values (`A` accel, `B` brake, `L` left, `R` right, `U` up, `D` down).
 * **CSV tracks** get five more columns: `accel_g`, `brake_g`, `lateral_g`, `up_g`, `down_g`
-  = max since the previous point (empty without calibration).
+  = max since the previous point (empty without calibration), and `source` (`gps` or `dr`,
+  see [Dead reckoning](#dead-reckoning)).
 * **Web page**: current and max values in the GPS table.
 
-All axes are fixed to the vehicle as calibrated, not to the ground. In a plane, calibrate
-on the ground: vertical then is the load factor minus 1 (+1 g in a 60° level turn, where a
-pilot reads 2 g). Pitched, gravity shows in lon (about 0.17 g at 10° pitch); banked, it
-shows in lat, except in a coordinated turn.
+**Gravity** is followed with the gyroscope, so slopes and body roll / pitch don't show as
+acceleration. The gyroscope's offset is measured whenever the Cardputer stands still (at
+start, at traffic lights); until then the fixed "up" from the calibration is used. Once
+forward is learned, gravity is also pulled back toward the measurement within a few
+seconds, minus the vehicle's own acceleration (GPS speed changes, turn rate × speed), so the
+gyroscope can't drift away; without GPS (tunnel) it follows the gyroscope only.
+
+All axes are fixed to the vehicle as calibrated. In a plane, calibrate on the ground:
+vertical then is the load factor minus 1 (+1 g in a 60° level turn, where a pilot reads
+2 g). The gravity correction assumes a vehicle on the ground, so in the air expect some
+gravity to show in lon and lat in long turns and climbs.
+
+### Dead reckoning
+
+With `dead_reckoning=1` (default; settings: *Dead reckoning*) the logger keeps recording
+when the GPS loses its fix, e.g. in a tunnel. It needs the calibration with learned
+forward and the gyroscope offset (settings show `on (calibrate)`, `on (learning)` or
+`on (stand still)` until then). From the last fix on:
+
+* **Heading**: the GPS course, turned by the gyroscope.
+* **Speed**: the last GPS speed plus the longitudinal acceleration, minus its remaining
+  error learned while the GPS was there; 0 while standing still (jam); pulled back toward
+  the speed before the gap within about a minute, so a small error can't add up.
+* **Altitude**: changes with the slope seen by the accelerometer.
+
+The status bar shows `DR` and the seconds since the last fix. Estimated points follow the
+log mode like GPS points. They are kept in RAM (up to 200) until the fix is back; then the
+difference between the estimate and the fix is spread over them by time, so the track
+joins the real position without a jump. Logging stopped, deep sleep or a full buffer write
+them uncorrected. After 10 minutes without fix no more points are estimated.
+
+In the files they are marked: CSV column `source` = `dr`; GPX `<src>dead reckoning</src>`
+and `<fix>none</fix>`, without `<sat>` and `<hdop>`. Expect errors of a few percent of the
+distance driven without fix, more with speed changes in the tunnel.
 
 ### Motion cues
 

@@ -34,13 +34,13 @@ static bool writeCsv(const LogPoint& p, const String& path) {
   if (!f) return false;
   if (isNew)
     f.println("time_utc,latitude,longitude,altitude_m,speed_kmh,course_deg,satellites,hdop,battery_pct,"
-              "accel_g,brake_g,lateral_g,up_g,down_g");
+              "accel_g,brake_g,lateral_g,up_g,down_g,source");
   char t[24], acc[40] = ",,,,";
   isoTime(p, t, sizeof(t));
   if (p.hasAccel)
     snprintf(acc, sizeof(acc), "%.2f,%.2f,%.2f,%.2f,%.2f", p.accelG, p.brakeG, p.latG, p.upG, p.downG);
-  bool ok = f.printf("%s,%.7f,%.7f,%.1f,%.1f,%.1f,%u,%.2f,%d,%s\n", t, p.lat, p.lon, p.altM, p.speedKmh,
-                     p.courseDeg, p.sats, p.hdop, p.batteryPct, acc) > 0;
+  bool ok = f.printf("%s,%.7f,%.7f,%.1f,%.1f,%.1f,%u,%.2f,%d,%s,%s\n", t, p.lat, p.lon, p.altM, p.speedKmh,
+                     p.courseDeg, p.sats, p.hdop, p.batteryPct, acc, p.dr ? "dr" : "gps") > 0;
   f.close();
   return ok;
 }
@@ -87,9 +87,12 @@ static bool writeGpx(const LogPoint& p, const String& path) {
   }
   char t[24];
   isoTime(p, t, sizeof(t));
-  bool ok = f.printf("   <trkpt lat=\"%.7f\" lon=\"%.7f\"><ele>%.1f</ele><time>%s</time>"
-                     "<sat>%u</sat><hdop>%.2f</hdop></trkpt>\n",
-                     p.lat, p.lon, p.altM, t, p.sats, p.hdop) > 0;
+  bool ok = p.dr ? f.printf("   <trkpt lat=\"%.7f\" lon=\"%.7f\"><ele>%.1f</ele><time>%s</time>"
+                            "<src>dead reckoning</src><fix>none</fix></trkpt>\n",
+                            p.lat, p.lon, p.altM, t) > 0
+                 : f.printf("   <trkpt lat=\"%.7f\" lon=\"%.7f\"><ele>%.1f</ele><time>%s</time>"
+                            "<sat>%u</sat><hdop>%.2f</hdop></trkpt>\n",
+                            p.lat, p.lon, p.altM, t, p.sats, p.hdop) > 0;
   // The file can't be truncated: blank out the rest of a cut-off write.
   while (f.position() + strlen(GPX_FOOTER) < oldSize && f.write(' ')) {}
   ok = ok && f.print(GPX_FOOTER) == strlen(GPX_FOOTER);

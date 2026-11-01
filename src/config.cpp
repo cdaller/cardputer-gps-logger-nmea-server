@@ -139,6 +139,7 @@ void configParse(Config& cfg, Stream& f) {
     else if (key == "nmea_port" && n >= 1 && n <= 65535) cfg.nmeaPort = n;
     else if (key == "gps_standby") cfg.gpsStandby = n != 0;
     else if (key == "motion_cues") cfg.motionCues = n != 0;
+    else if (key == "dead_reckoning") cfg.deadReckoning = n != 0;
     else if (key == "imu_up") sscanf(val.c_str(), "%f,%f,%f", &cfg.imuUp[0], &cfg.imuUp[1], &cfg.imuUp[2]);
     else if (key == "imu_fwd") sscanf(val.c_str(), "%f,%f,%f", &cfg.imuFwd[0], &cfg.imuFwd[1], &cfg.imuFwd[2]);
     else if (key == "imu_fwd_learned") cfg.imuFwdLearned = n != 0;
@@ -213,6 +214,8 @@ String configText(const Config& cfg) {
   f.printf("gps_standby=%d\n", cfg.gpsStandby ? 1 : 0);
   f.println("# 1 = vehicle motion cues: dots at the left and right edge move with the acceleration (Cardputer ADV)");
   f.printf("motion_cues=%d\n", cfg.motionCues ? 1 : 0);
+  f.println("# 1 = estimated track points from accelerometer and gyroscope without GPS fix, e.g. in tunnels (Cardputer ADV)");
+  f.printf("dead_reckoning=%d\n", cfg.deadReckoning ? 1 : 0);
   f.println("# accelerometer calibration, set on the acceleration page");
   f.printf("imu_up=%.4f,%.4f,%.4f\n", cfg.imuUp[0], cfg.imuUp[1], cfg.imuUp[2]);
   f.printf("imu_fwd=%.4f,%.4f,%.4f\n", cfg.imuFwd[0], cfg.imuFwd[1], cfg.imuFwd[2]);
