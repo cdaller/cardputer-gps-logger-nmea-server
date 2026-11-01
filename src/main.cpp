@@ -1047,7 +1047,7 @@ enum SettingId {
   S_LOGMODE, S_INTERVAL, S_DISTANCE, S_AUTOPAUSE, S_FORMAT, S_NMEA, S_SLEEP, S_SCREEN, S_FIXTO,
   S_MODULE, S_RX, S_TX, S_BAUD, S_STANDBY,
   S_SERVER, S_WIFIMODE, S_PORT, S_SSID, S_PASS, S_SSID2, S_PASS2, S_SSID3, S_PASS3, S_APSSID, S_APPASS,
-  S_TZ, S_DST, S_AUTOSTART, S_BRIGHT, S_RECLED, S_COUNT
+  S_TZ, S_DST, S_AUTOSTART, S_BRIGHT, S_RECLED, S_CUES, S_COUNT
 };
 static const char* const SETTING_NAMES[S_COUNT] = {
   "Log mode", "Log interval", "Log distance", "Auto pause", "Log format", "NMEA log", "Deep sleep",
@@ -1055,7 +1055,7 @@ static const char* const SETTING_NAMES[S_COUNT] = {
   "GPS RX pin", "GPS TX pin", "GPS baud", "GPS standby", "NMEA server", "WiFi mode", "NMEA port",
   "WiFi 1 SSID", "WiFi 1 password", "WiFi 2 SSID", "WiFi 2 password", "WiFi 3 SSID", "WiFi 3 password",
   "AP name", "AP password", "Time zone", "Summer time", "Auto start", "Brightness",
-  "Recording LED",
+  "Recording LED", "Motion cues",
 };
 static const uint32_t INTERVALS[] = {1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600};
 static const uint32_t DISTANCES[] = {5, 10, 20, 50, 100, 200, 500, 1000};
@@ -1128,6 +1128,10 @@ static String settingValue(int id) {
     case S_AUTOSTART: return cfg.autoStart ? "on" : "off";
     case S_BRIGHT: return String(cfg.brightness * 100 / 255) + " %";
     case S_RECLED: return cfg.recLed ? "on" : "off";
+    case S_CUES:
+      if (!cfg.motionCues) return "off";
+      if (!motion::available()) return "on (no IMU)";
+      return motion::calibrated() ? "on" : "on (calibrate)";
     case S_SERVER: return cfg.nmeaServer ? "on" : "off";
     case S_WIFIMODE: return cfg.wifiClient ? "client" : "own AP";
     case S_PORT: return String(cfg.nmeaPort);
@@ -1227,6 +1231,7 @@ static void changeSetting(int id, int dir) {
     case S_DST: cfg.dstRule = (cfg.dstRule + DST_COUNT + dir) % DST_COUNT; break;
     case S_AUTOSTART: cfg.autoStart = !cfg.autoStart; break;
     case S_RECLED: cfg.recLed = !cfg.recLed; break;
+    case S_CUES: cfg.motionCues = !cfg.motionCues; break;
     case S_SERVER: cfg.nmeaServer = !cfg.nmeaServer; break;
     case S_WIFIMODE: cfg.wifiClient = !cfg.wifiClient; break;
     case S_BRIGHT:
@@ -1951,6 +1956,58 @@ static void drawLivePage(bool map) {
 
 static void drawSubPageBar();
 
+// ---------------------------------------------------------------- motion cues
+
+// Vehicle motion cues like on the iPhone: dots along the left and right edge
+// that move against the acceleration of the vehicle, as loose objects would
+// (screen up = forward). They invert the pixels below, so the content stays
+// readable. Dots pushed toward the center shrink and vanish instead of
+// covering it, dots pushed outward leave the screen.
+static const int CUE_ROWS = 7;                // dots per column
+static const int CUE_COLS[] = {5, 15};        // columns, distance from the edge
+static const float CUE_R = 3;                 // radius at rest
+static const float CUE_PX_PER_G = 60;         // shift per g
+static const float CUE_MAX_PX = 30;
+static const float CUE_VANISH_PX = 20;        // inward shift at which a dot is gone
+static const uint32_t CUE_FADE_MS = 1000;     // dots grow / shrink when moving starts / stops
+static const uint32_t CUE_DRAW_MS = 100;      // redraw interval while on, smoother than the usual one
+
+static bool cuesOn() { return cfg.motionCues && motion::calibrated(); }
+
+static void invertDot(int cx, int cy, float r) {
+  uint16_t* buf = (uint16_t*)canvas.getBuffer();
+  int w = canvas.width(), h = canvas.height(), ri = ceilf(r);
+  for (int y = max(cy - ri, 0); y <= min(cy + ri, h - 1); y++)
+    for (int x = max(cx - ri, 0); x <= min(cx + ri, w - 1); x++)
+      if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r) buf[y * w + x] ^= 0xFFFF;
+}
+
+static void drawMotionCues() {
+  static float presence = 0;  // 0 = hidden, 1 = full size
+  static uint32_t lastMs = 0;
+  uint32_t now = millis();
+  float step = min(now - lastMs, CUE_FADE_MS) / (float)CUE_FADE_MS;
+  lastMs = now;
+  presence = constrain(presence + (cuesOn() && !motion::still() ? step : -step), 0.0f, 1.0f);
+  if (presence == 0) return;
+  float dx = constrain(-motion::latG() * CUE_PX_PER_G, -CUE_MAX_PX, CUE_MAX_PX);
+  float dy = constrain(motion::lonG() * CUE_PX_PER_G, -CUE_MAX_PX, CUE_MAX_PX);
+  int w = canvas.width(), h = canvas.height();
+  float spacing = (float)h / CUE_ROWS;
+  for (int side = 0; side < 2; side++) {
+    float inward = side == 0 ? dx : -dx;
+    float r = CUE_R * presence * (1 - max(inward, 0.0f) / CUE_VANISH_PX);
+    if (r <= 0) continue;
+    for (int c = 0; c < 2; c++) {
+      int x = lroundf(side == 0 ? CUE_COLS[c] + dx : w - 1 - CUE_COLS[c] + dx);
+      for (int i = 0; i < CUE_ROWS; i++) {
+        float y = fmodf(spacing * (i + 0.5f + c * 0.5f) + dy + 2 * h, h);  // inner column staggered
+        invertDot(x, lroundf(y), r);
+      }
+    }
+  }
+}
+
 static void draw() {
   canvas.fillScreen(COL_BG);
   canvas.setTextDatum(top_left);
@@ -1982,6 +2039,7 @@ static void draw() {
   }
   drawSubPageBar();
   if (millis() < statusMsgUntil) drawMessageBox(statusMsg);
+  drawMotionCues();
   canvas.pushSprite(0, 0);
 }
 
@@ -2655,7 +2713,7 @@ void loop() {
     }
   }
 
-  if (screenOn && now - lastDrawMs > 200) {
+  if (screenOn && now - lastDrawMs > (cuesOn() ? CUE_DRAW_MS : 200)) {
     lastDrawMs = now;
     if (page == PAGE_LIVE_INFO || page == PAGE_LIVE_MAP) updateLiveTrack();
     draw();

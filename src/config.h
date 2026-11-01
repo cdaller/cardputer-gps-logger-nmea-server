@@ -65,6 +65,7 @@ struct Config {
   String apPass = "gpslogger";    // empty = open network, else min. 8 characters
   uint16_t nmeaPort = 2000;
   bool gpsStandby = false;        // GPS module to standby while the IMU sees no motion
+  bool motionCues = false;        // dots at the screen edges that move with the vehicle acceleration
   float imuUp[3] = {0, 0, 0};     // accelerometer calibration, all 0 = not calibrated
   float imuFwd[3] = {0, 0, 0};
   bool imuFwdLearned = false;
