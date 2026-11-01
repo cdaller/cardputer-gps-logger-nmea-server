@@ -67,7 +67,6 @@ struct Config {
   uint16_t nmeaPort = 2000;
   bool gpsStandby = false;        // GPS module to standby while the IMU sees no motion
   bool deadReckoning = true;      // estimated points from the IMU while the GPS has no fix
-  bool motionCues = false;        // dots at the screen edges that move with the vehicle acceleration
   float imuUp[3] = {0, 0, 0};     // accelerometer calibration, all 0 = not calibrated
   float imuFwd[3] = {0, 0, 0};
   bool imuFwdLearned = false;

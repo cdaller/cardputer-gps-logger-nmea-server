@@ -73,9 +73,6 @@ Cardputer v1.x).
 - Deep sleep between points while logging (time mode, interval >= 15 s)
 - GPS standby while the accelerometer sees no motion (Cardputer ADV), see
   [GPS standby](#gps-standby)
-- Vehicle motion cues like on the iPhone (Cardputer ADV, `motion_cues`, default off): dots
-  at the left and right screen edge move with the acceleration, see
-  [Motion cues](#motion-cues)
 - GPS module presets plus custom RX/TX pins and baud rate, or automatic baud detection
 - Keyboard control when a keyboard is detected (matrix keyboard on v1.x, TCA8418 on ADV);
   without keyboard the G0 button still works
@@ -122,6 +119,11 @@ RX/TX are seen from the Cardputer (Cardputer RX <- GPS TX). Any module that outp
 standard NMEA (GGA/RMC, GSV for satellites in view, GSA for satellites used) over UART
 should work.
 On Cardputer v1.x, pins 13/15 belong to the keyboard matrix - use the Grove port there.
+
+Other firmware like MeshCore reconfigures CASIC modules (CAP LoRa-1262, Unit GPS v1.1,
+Unit GPS AT6558) to send only GGA and RMC, and the module keeps that setting: the fix
+works, but no satellites are in view and the satellite pages stay empty. With these presets
+the logger turns GSV and GSA back on at every start (`$PCAS03`).
 
 ## Build & flash
 
@@ -246,7 +248,6 @@ ap_ssid=GPS-NMEA-Logger
 ap_pass=k7rmx2qhwa        # random on first start; empty = open network, else min. 8 characters
 nmea_port=2000            # TCP server and UDP broadcast port
 gps_standby=0             # 1 = GPS to standby while not moving (Cardputer ADV)
-motion_cues=0             # 1 = dots at the screen edges move with the acceleration (Cardputer ADV)
 dead_reckoning=1          # 1 = estimated track points without GPS fix, e.g. in tunnels (Cardputer ADV)
 imu_up=0,0,0              # accelerometer calibration, set with C on the acceleration pages
 imu_fwd=0,0,0
@@ -427,18 +428,6 @@ them uncorrected. After 10 minutes without fix no more points are estimated.
 In the files they are marked: CSV column `source` = `dr`; GPX `<src>dead reckoning</src>`
 and `<fix>none</fix>`, without `<sat>` and `<hdop>`. Expect errors of a few percent of the
 distance driven without fix, more with speed changes in the tunnel.
-
-### Motion cues
-
-Against motion sickness, like the "Vehicle Motion Cues" of the iPhone: with
-`motion_cues=1` (settings: *Motion cues*) a column of seven dots runs along the left and right
-edge of the screen on every page while the vehicle moves. They move against the
-acceleration, as loose objects would: down when accelerating, up when braking, to the left
-in a right turn (the top of the screen counts as forward). Dots pushed toward the center
-shrink and vanish, so they never reach the content; dots pushed outward leave the screen.
-The dots invert what is below them, so text under them stays readable. They need the
-calibration (settings show `on (calibrate)` until then) and grow / shrink within a second
-when motion starts / stops. While on, the screen is redrawn every 100 ms instead of 200 ms.
 
 ## GPS standby
 
