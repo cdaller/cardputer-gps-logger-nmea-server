@@ -146,9 +146,10 @@ to the `creator` attribute of GPX files.
 1. Copy `dist/GPS-NMEA-Logger.bin` to the SD card.
 2. On the Cardputer start [Launcher](https://github.com/bmorcelli/Launcher), choose
    *SD*, select `GPS-NMEA-Logger.bin` and install it.
-3. **Important for deep sleep:** in the Launcher settings untick
-   **"DeepSleep starts Launcher"**. Otherwise every wake-up from deep sleep opens the
-   Launcher instead of returning to the logger.
+3. **Recommended for deep sleep:** in the Launcher settings untick
+   **"DeepSleep starts Launcher"**. Otherwise every wake-up from deep sleep boots the
+   Launcher first, which then restarts the logger: the recording continues, but each
+   point costs the Launcher's boot time on top.
 
 ## Keys
 

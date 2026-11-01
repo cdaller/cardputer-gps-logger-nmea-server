@@ -70,7 +70,9 @@ static const uint32_t LED_PERIOD_MS = 60000;
 static const uint32_t LED_FADE_MS = 1000;
 static const uint8_t LED_MAX = 160;  // of 255, red
 
-// Survives deep sleep.
+// Survives deep sleep and software resets (not power-on). NOINIT: started from
+// M5Launcher, a deep sleep wake-up boots the launcher first, which then restarts
+// into this app; the bootloader would reset RTC_DATA_ATTR variables on that restart.
 struct RtcState {
   uint32_t magic;
   bool logging;
@@ -78,7 +80,7 @@ struct RtcState {
   char baseName[48];
   uint32_t points;
   uint32_t detectedBaud;
-  uint64_t wakeAtMs;  // planned timer wake-up, on the RTC clock (rtcNowMs)
+  uint64_t wakeAtMs;  // planned timer wake-up, on the RTC clock (rtcNowMs), 0 = awake
   // Recording filter: last recorded point and auto pause state
   bool hasLast;
   double lastLat, lastLon;
@@ -87,7 +89,7 @@ struct RtcState {
   bool paused;
   uint64_t stillSinceMs;  // rtcNowMs, 0 = moving
 };
-RTC_DATA_ATTR RtcState rtc;
+RTC_NOINIT_ATTR RtcState rtc;
 
 enum Page {
   PAGE_MAIN, PAGE_BIG, PAGE_DETAILS, PAGE_SATS, PAGE_SIGNAL, PAGE_LIVE_INFO, PAGE_LIVE_MAP, PAGE_GG,
@@ -567,6 +569,10 @@ static void quietWakeCycle() {
     return now > rtc.wakeAtMs ? (uint32_t)(now - rtc.wakeAtMs) : 0;
   };
   pinMode(PIN_WAKE_BTN, INPUT_PULLUP);
+  if (esp_reset_reason() != ESP_RST_DEEPSLEEP) {  // via M5Launcher, which may have switched it on
+    pinMode(PIN_BACKLIGHT, OUTPUT);
+    digitalWrite(PIN_BACKLIGHT, LOW);
+  }
   if (rtc.isAdv) {
     pinMode(PIN_ADV_LORA_CS, OUTPUT);
     digitalWrite(PIN_ADV_LORA_CS, HIGH);
@@ -2760,14 +2766,16 @@ static bool detectKeyboard() {
 
 void setup() {
   Serial.begin(115200);
-  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-  bool fromSleep = cause == ESP_SLEEP_WAKEUP_TIMER || cause == ESP_SLEEP_WAKEUP_EXT0;
-  if (!fromSleep || rtc.magic != RTC_MAGIC) {
+  if (esp_reset_reason() == ESP_RST_POWERON || rtc.magic != RTC_MAGIC) {
     memset(&rtc, 0, sizeof(rtc));
     rtc.magic = RTC_MAGIC;
   }
-
-  if (cause == ESP_SLEEP_WAKEUP_TIMER && rtc.logging) quietWakeCycle();  // returns only for UI
+  // Timer wake-up: directly, or through M5Launcher's restart (wake cause lost,
+  // but the planned wake-up time has passed; a G0 wake-up comes before it).
+  bool timerWake = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER ||
+                   (rtc.wakeAtMs && rtcNowMs() >= rtc.wakeAtMs);
+  if (timerWake && rtc.logging) quietWakeCycle();  // returns only for UI
+  rtc.wakeAtMs = 0;
 
   gpio_hold_dis(PIN_BACKLIGHT);
   gpio_deep_sleep_hold_dis();
@@ -2806,8 +2814,8 @@ void setup() {
   loadOverlays();  // after the WiFi start: it leaves its memory free
 
   if (!sdOk) showStatus("No SD card!", 4000);
-  else if (!fromSleep && cfg.autoStart) startLogging();
-  else if (fromSleep && rtc.logging) showStatus("Woke up - still logging");
+  else if (rtc.logging) showStatus("Woke up - still logging");
+  else if (cfg.autoStart) startLogging();
 
   lastInputMs = millis();
 }
