@@ -47,6 +47,7 @@ struct Config {
   bool autoPause = true;          // no points while standing still
   uint8_t logFormat = LOG_CSV_GPX;
   bool logNmea = false;            // raw NMEA sentences to .nmea
+  bool nmeaSerial = false;         // NMEA sentences (plus XDR acceleration) to the USB serial port
   bool deepSleep = false;
   uint16_t screenTimeoutSec = 60; // 0 = never
   uint16_t fixTimeoutSec = 60;    // max. time to wait for a fix after waking up

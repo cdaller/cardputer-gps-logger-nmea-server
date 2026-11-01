@@ -57,6 +57,8 @@ Cardputer v1.x).
   The GPX file is closed after every point, so it stays valid if power is lost.
 - Optional raw NMEA log (`.nmea` next to the track): all sentences from the GPS,
   buffered in RAM and written in 4 KB chunks (up to 4 KB are lost on power loss)
+- Optional NMEA output on the USB serial port, with acceleration as XDR sentence and a
+  small terminal monitor, see [NMEA over USB serial](#nmea-over-usb-serial)
 - Log modes like Garmin: smart (at turns and speed changes), by time (1 s … 1 h) or by
   distance (5 m … 1 km); auto pause while standing still; inaccurate fixes are never
   recorded. See [Log modes](#log-modes)
@@ -217,6 +219,7 @@ log_distance=10           # meters (distance mode)
 auto_pause=1              # 1 = no points while standing still
 log_format=CSV+GPX        # CSV | GPX | CSV+GPX
 nmea_log=0                # 1 = also log raw NMEA to .nmea
+nmea_serial=0             # 1 = NMEA (plus XDR acceleration) to the USB serial port, no deep sleep
 deep_sleep=0
 screen_timeout=60         # seconds, 0 = never
 fix_timeout=60            # max. seconds to wait for a fix after deep sleep wake-up
@@ -313,6 +316,34 @@ socat -u UDP-RECV:2000 -
 Don't use `nc -ul 2000` for UDP: macOS netcat ties its socket to the first sender and its
 own address, so it drops the following broadcast packets after a few lines.
 
+## NMEA over USB serial
+
+With `nmea_serial=1` (settings: *NMEA serial*) the NMEA sentences from the GPS also go to the
+USB serial port (115200 baud, `/dev/cu.usbmodem*` on macOS, `/dev/ttyACM*` on Linux, a COM
+port on Windows). Sentences that don't fit into the send buffer are dropped, so the logger
+never waits for a computer that doesn't read. Deep sleep and GPS standby are off while it is on
+(settings show `on (serial on)`).
+
+NMEA 0183 has no sentence for acceleration. With a calibrated accelerometer (Cardputer ADV)
+the acceleration is added five times a second as generic transducer measurement (XDR, type
+`G`), in g, with the same signs as on the acceleration pages:
+
+```
+$IIXDR,G,0.120,,ACCLON,G,-0.050,,ACCLAT,G,0.010,,ACCVERT*hh
+```
+
+`ACCLON` + = accelerating, `ACCLAT` + = to the right, `ACCVERT` + = up. Programs that don't
+know these transducer names ignore the sentence.
+
+`scripts/nmea_monitor.py` shows time, position, altitude, speed and acceleration in the
+terminal:
+
+```sh
+pip install pyserial    # or use ~/.platformio/penv/bin/python, which has it
+python3 scripts/nmea_monitor.py              # first usbmodem / ttyACM port
+python3 scripts/nmea_monitor.py /dev/cu.usbmodem1101
+```
+
 ## Log modes
 
 GPS positions jitter by a few meters even when the device doesn't move. Recording all of
@@ -385,7 +416,8 @@ server on or while deep sleep is active. The motion thresholds are first estimat
 
 ## Deep sleep
 
-With `deep_sleep=1`, logging active in time mode and an interval of at least 15 s, the device goes
+With `deep_sleep=1`, logging active in time mode, an interval of at least 15 s and neither the
+NMEA server nor the serial NMEA output on, the device goes
 to deep sleep after `screen_timeout` seconds without input. It then wakes up by timer for
 each point, reads the GPS (display stays off), writes the point and sleeps again. If no fix
 is found within `fix_timeout` seconds, that point is skipped. Press **G0** to get the UI back.

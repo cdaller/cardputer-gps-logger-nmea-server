@@ -175,6 +175,8 @@ String configText(const Config& cfg) {
   f.printf("log_format=%s\n", LOG_FORMAT_NAMES[cfg.logFormat]);
   f.println("# 1 = also write all NMEA sentences from the GPS to a .nmea file");
   f.printf("nmea_log=%d\n", cfg.logNmea ? 1 : 0);
+  f.println("# 1 = send the NMEA sentences (plus XDR acceleration) to the USB serial port, no deep sleep");
+  f.printf("nmea_serial=%d\n", cfg.nmeaSerial ? 1 : 0);
   f.println("# 1 = deep sleep between points while logging (time mode, interval >= 15s)");
   f.printf("deep_sleep=%d\n", cfg.deepSleep ? 1 : 0);
   f.println("# seconds without key press until screen off / deep sleep, 0 = never");

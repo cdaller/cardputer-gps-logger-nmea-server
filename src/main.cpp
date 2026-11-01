@@ -215,11 +215,45 @@ static uint64_t rtcNowMs() {
 static bool canDeepSleep() {
   return rtc.logging && cfg.deepSleep && cfg.logMode == LOG_MODE_TIME &&
          cfg.logIntervalSec >= MIN_SLEEP_INTERVAL_SEC && sdOk &&
-         !cfg.nmeaServer;  // WiFi would be off while sleeping
+         !cfg.nmeaServer && !cfg.nmeaSerial;  // WiFi / USB would be off while sleeping
 }
 
 static uint32_t effectiveBaud() {
   return cfg.gpsBaud ? cfg.gpsBaud : rtc.detectedBaud;  // reuse auto-detected baud after wake
+}
+
+// Whole sentences to the USB serial port, only if they fit into its buffer:
+// without a host reading, writing would block the loop.
+static void serialWriteLine(const char* line, size_t len) {
+  if (Serial && Serial.availableForWrite() >= (int)len) Serial.write((const uint8_t*)line, len);
+}
+
+static void serialPut(char c) {
+  static char line[100];
+  static size_t len = 0;
+  if (!cfg.nmeaSerial) return;
+  if (len < sizeof(line)) line[len++] = c;
+  if (c != '\n') return;
+  // Overlong lines are garbage; the first line may start mid-sentence.
+  if (len < sizeof(line) && (line[0] == '$' || line[0] == '!')) serialWriteLine(line, len);
+  len = 0;
+}
+
+// Acceleration as XDR sentence (NMEA has no acceleration sentence of its own):
+// generic transducers ACCLON (+ = accelerating), ACCLAT (+ = to the right),
+// ACCVERT (+ = up), in g.
+static const uint32_t XDR_MS = 200;
+static void sendAccelXdr() {
+  static uint32_t lastMs = 0;
+  if (!cfg.nmeaSerial || !motion::calibrated() || millis() - lastMs < XDR_MS) return;
+  lastMs = millis();
+  char buf[96];
+  int n = snprintf(buf, sizeof(buf), "$IIXDR,G,%.3f,,ACCLON,G,%.3f,,ACCLAT,G,%.3f,,ACCVERT",
+                   motion::lonG(), motion::latG(), motion::vertG());
+  uint8_t cs = 0;
+  for (int i = 1; i < n; i++) cs ^= buf[i];
+  n += snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", cs);
+  serialWriteLine(buf, n);
 }
 
 // Raw NMEA goes to the track's .nmea file; sentences before the first point
@@ -227,6 +261,7 @@ static uint32_t effectiveBaud() {
 static void nmeaSink(char c) {
   if (rtc.logging && cfg.logNmea && sdOk && rtc.baseName[0]) logger::nmeaPut(c, rtc.baseName);
   nmeaserver::put(c);
+  serialPut(c);
 }
 
 static void startGps() {
@@ -374,7 +409,8 @@ static void stopLogging() {
 
 // Not with deep sleep (has its own wake-ups) or the NMEA server (devices want positions).
 static void updateGpsStandby() {
-  if (!cfg.gpsStandby || gpsStandbyFailed || !motion::available() || canDeepSleep() || cfg.nmeaServer) {
+  if (!cfg.gpsStandby || gpsStandbyFailed || !motion::available() || canDeepSleep() || cfg.nmeaServer ||
+      cfg.nmeaSerial) {
     gpsStandbyMs = 0;
     return;
   }
@@ -1044,13 +1080,13 @@ static void drawAccelChartPage() {
 // ---------------------------------------------------------------- settings
 
 enum SettingId {
-  S_LOGMODE, S_INTERVAL, S_DISTANCE, S_AUTOPAUSE, S_FORMAT, S_NMEA, S_SLEEP, S_SCREEN, S_FIXTO,
+  S_LOGMODE, S_INTERVAL, S_DISTANCE, S_AUTOPAUSE, S_FORMAT, S_NMEA, S_SERIAL, S_SLEEP, S_SCREEN, S_FIXTO,
   S_MODULE, S_RX, S_TX, S_BAUD, S_STANDBY,
   S_SERVER, S_WIFIMODE, S_PORT, S_SSID, S_PASS, S_SSID2, S_PASS2, S_SSID3, S_PASS3, S_APSSID, S_APPASS,
   S_TZ, S_DST, S_AUTOSTART, S_BRIGHT, S_RECLED, S_CUES, S_COUNT
 };
 static const char* const SETTING_NAMES[S_COUNT] = {
-  "Log mode", "Log interval", "Log distance", "Auto pause", "Log format", "NMEA log", "Deep sleep",
+  "Log mode", "Log interval", "Log distance", "Auto pause", "Log format", "NMEA log", "NMEA serial", "Deep sleep",
   "Screen timeout", "Fix timeout", "GPS module",
   "GPS RX pin", "GPS TX pin", "GPS baud", "GPS standby", "NMEA server", "WiFi mode", "NMEA port",
   "WiFi 1 SSID", "WiFi 1 password", "WiFi 2 SSID", "WiFi 2 password", "WiFi 3 SSID", "WiFi 3 password",
@@ -1102,9 +1138,11 @@ static String settingValue(int id) {
     case S_AUTOPAUSE: return cfg.autoPause ? "on" : "off";
     case S_FORMAT: return LOG_FORMAT_NAMES[cfg.logFormat];
     case S_NMEA: return cfg.logNmea ? "on" : "off";
+    case S_SERIAL: return cfg.nmeaSerial ? "on" : "off";
     case S_SLEEP:
       if (!cfg.deepSleep) return "off";
       if (cfg.nmeaServer) return "on (WiFi on)";
+      if (cfg.nmeaSerial) return "on (serial on)";
       if (cfg.logMode != LOG_MODE_TIME) return "on (time mode)";
       return cfg.logIntervalSec >= MIN_SLEEP_INTERVAL_SEC ? "on" : "on (int<15s)";
     case S_SCREEN: return secondsText(cfg.screenTimeoutSec);
@@ -1122,6 +1160,7 @@ static String settingValue(int id) {
       if (!motion::available()) return "on (no IMU)";
       if (gpsStandbyFailed) return "on (unsupported)";
       if (cfg.nmeaServer) return "on (WiFi on)";
+      if (cfg.nmeaSerial) return "on (serial on)";
       return cfg.deepSleep && cfg.logMode == LOG_MODE_TIME ? "on (deep sleep)" : "on";
     case S_TZ: return "UTC" + tzText(cfg.tzOffsetMin);
     case S_DST: return DST_NAMES[cfg.dstRule];
@@ -1219,6 +1258,7 @@ static void changeSetting(int id, int dir) {
     case S_AUTOPAUSE: cfg.autoPause = !cfg.autoPause; break;
     case S_FORMAT: cfg.logFormat = (cfg.logFormat + LOG_FORMAT_COUNT + dir) % LOG_FORMAT_COUNT; break;
     case S_NMEA: cfg.logNmea = !cfg.logNmea; break;
+    case S_SERIAL: cfg.nmeaSerial = !cfg.nmeaSerial; break;
     case S_SLEEP: cfg.deepSleep = !cfg.deepSleep; break;
     case S_SCREEN: cfg.screenTimeoutSec = cycle(SCREEN_TOS, cfg.screenTimeoutSec, dir); break;
     case S_FIXTO: cfg.fixTimeoutSec = cycle(FIX_TOS, cfg.fixTimeoutSec, dir); break;
@@ -2660,6 +2700,7 @@ void loop() {
   gps.update();
   if (gps.baudLocked() && cfg.gpsBaud == 0) rtc.detectedBaud = gps.baud();
   feedMotion();
+  sendAccelXdr();
   updateGpsStandby();
   updateRecLed();
   handleInput();
