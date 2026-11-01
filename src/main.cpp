@@ -742,13 +742,45 @@ static void drawRow(int y, const char* label, const String& value, uint16_t colo
   canvas.drawString(value, 30, y);
 }
 
+// What the pages show: the GPS fix, or without one the dead reckoning estimate.
+struct NavData {
+  bool valid, estimated;
+  double lat, lon;
+  bool hasAlt, hasSpeed, hasCourse;
+  float altM, kmh, courseDeg;
+};
+
+static NavData navData() {
+  TinyGPSPlus& g = gps.gps();
+  NavData n = {};
+  if (gps.hasFix()) {
+    n = {true, false, g.location.lat(), g.location.lng(), g.altitude.isValid(), g.speed.isValid(),
+         g.course.isValid(), (float)g.altitude.meters(), (float)g.speed.kmph(), (float)g.course.deg()};
+  } else if (drEnabled()) {
+    const deadreckon::Estimate& e = deadreckon::estimate();
+    n = {true, true, e.lat, e.lon, true, true, true, e.altM, e.speedKmh, e.courseDeg};
+  }
+  return n;
+}
+
+// Orange circled "i": the values are estimated (dead reckoning).
+static void drawEstimatedIcon(int cx, int cy) {
+  canvas.fillCircle(cx, cy, 7, TFT_ORANGE);
+  canvas.setFont(&fonts::Font2);
+  canvas.setTextColor(TFT_BLACK);
+  canvas.setTextDatum(middle_center);
+  canvas.drawString("i", cx, cy + 1);
+  canvas.setTextDatum(top_left);
+}
+
 static void drawMainPage() {
   TinyGPSPlus& g = gps.gps();
-  bool fix = gps.hasFix();
+  NavData n = navData();
+  bool fix = n.valid;
   char buf[32];
 
   if (fix) {
-    double lat = g.location.lat(), lon = g.location.lng();
+    double lat = n.lat, lon = n.lon;
     snprintf(buf, sizeof(buf), "%.6f %c", fabs(lat), lat >= 0 ? 'N' : 'S');
     drawRow(22, "LAT", buf, COL_POS);
     snprintf(buf, sizeof(buf), "%.6f %c", fabs(lon), lon >= 0 ? 'E' : 'W');
@@ -758,9 +790,10 @@ static void drawMainPage() {
     drawRow(50, "LON", "--", COL_NOFIX);
   }
 
-  if (fix && g.altitude.isValid()) snprintf(buf, sizeof(buf), "%.0f m", g.altitude.meters());
+  if (fix && n.hasAlt) snprintf(buf, sizeof(buf), "%.0f m", n.altM);
   else strcpy(buf, "--");
   drawRow(78, "ALT", buf, fix ? COL_ALT : COL_NOFIX);
+  if (n.estimated) drawEstimatedIcon(228, 33);
 
   // Satellites used in fix, large, right side of the altitude row
   int used = g.satellites.value();
@@ -792,8 +825,8 @@ static void drawMainPage() {
 // Speed, direction and altitude in large letters, readable at a glance.
 static void drawBigPage() {
   static const char* const DIRS[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
-  TinyGPSPlus& g = gps.gps();
-  bool fix = gps.hasFix();
+  NavData n = navData();
+  bool fix = n.valid;
   char buf[16];
   auto row = [&](int baseline, const char* label, const char* value, const char* unit, uint16_t col) {
     canvas.setFont(&fonts::Font0);
@@ -811,17 +844,17 @@ static void drawBigPage() {
     return x;
   };
 
-  if (fix && g.speed.isValid()) {
-    double kmh = g.speed.kmph();
+  if (fix && n.hasSpeed) {
+    double kmh = n.kmh;
     snprintf(buf, sizeof(buf), kmh < 100 ? "%.1f" : "%.0f", kmh);
   } else {
     strcpy(buf, "--");
   }
   row(55, "SPD", buf, "km/h", COL_POS);
 
-  bool course = fix && g.course.isValid();
+  bool course = fix && n.hasCourse;
   if (course) {
-    double deg = g.course.deg();
+    double deg = n.courseDeg;
     snprintf(buf, sizeof(buf), "%s %.0f", DIRS[(int)((deg + 22.5) / 45) % 8], deg);
   } else {
     strcpy(buf, "--");
@@ -832,10 +865,11 @@ static void drawBigPage() {
     canvas.drawCircle(x + 7, 66, 3, TFT_WHITE);
   }
 
-  if (fix && g.altitude.isValid()) snprintf(buf, sizeof(buf), "%.0f", g.altitude.meters());
+  if (fix && n.hasAlt) snprintf(buf, sizeof(buf), "%.0f", n.altM);
   else strcpy(buf, "--");
   row(133, "ALT", buf, "m", COL_ALT);
   canvas.setTextDatum(top_left);
+  if (n.estimated) drawEstimatedIcon(228, 30);
 }
 
 static void drawDetailsPage() {
@@ -852,7 +886,9 @@ static void drawDetailsPage() {
     canvas.drawString(buf, 3, y);
     y += 14;
   };
-  line(TFT_CYAN, "Speed %.1f km/h  Course %.0f", g.speed.kmph(), g.course.deg());
+  NavData n = navData();
+  line(n.estimated ? TFT_ORANGE : TFT_CYAN, "Speed %.1f km/h  Course %.0f%s", n.kmh, n.courseDeg,
+       n.estimated ? "  (DR)" : "");
   // Rough horizontal accuracy: HDOP x user range error (~5 m for a consumer
   // module without corrections; real error can be larger with weak signals).
   char acc[12] = "";
@@ -2048,24 +2084,29 @@ static void updateLiveTrack() {
 
 static bool liveHasTrack() { return rtc.logging && liveTrack.count && strcmp(liveBase, rtc.baseName) == 0; }
 
-// GPS position for the current track map without a track, nullptr without fix.
+// GPS position (or the dead reckoning estimate) for the current track map, nullptr without.
 static const tracks::Point* gpsPoint() {
   static tracks::Point p;
-  if (!gps.hasFix()) return nullptr;
-  p = {(float)gps.gps().location.lat(), (float)gps.gps().location.lng(), 0, 0, 0};
+  NavData n = navData();
+  if (!n.valid) return nullptr;
+  p = {(float)n.lat, (float)n.lon, 0, 0, 0};
   return &p;
 }
 
 // What the current track map shows: the track being logged, or without one
 // the map overlays and the GPS position. False if there is nothing to show.
 static bool liveMapContent(tracks::Bounds& b, const tracks::Point*& latest) {
+  latest = gpsPoint();
   if (liveHasTrack()) {
     b = trackBounds(liveTrack);
-    latest = &liveState.prev;
-    return true;
+    // Dead reckoned points are written when the fix is back: show the estimate meanwhile
+    if (!latest || !navData().estimated) {
+      latest = &liveState.prev;
+      return true;
+    }
+  } else if (!overlay::bounds(b)) {
+    return false;
   }
-  latest = gpsPoint();
-  if (!overlay::bounds(b)) return false;
   if (latest) {
     b.latMin = min(b.latMin, latest->lat);
     b.latMax = max(b.latMax, latest->lat);
@@ -2081,7 +2122,10 @@ static void drawLivePage(bool map) {
   canvas.setTextColor(COL_LABEL);
   tracks::Bounds b;
   const tracks::Point* latest;
-  if (map && liveMapContent(b, latest)) drawMap(b, liveView, latest, liveHasTrack() ? &liveTrack : nullptr);
+  if (map && liveMapContent(b, latest)) {
+    drawMap(b, liveView, latest, liveHasTrack() ? &liveTrack : nullptr);
+    if (navData().estimated) drawEstimatedIcon(228, 30);
+  }
   else if (!rtc.logging) canvas.drawString("Not logging - Enter starts", 3, 22);
   else if (!liveHasTrack()) canvas.drawString("No points yet", 3, 22);
   else drawTrackInfo(liveTrack, liveView);
@@ -2096,8 +2140,8 @@ static void drawSubPageBar();
 // (screen up = forward). They invert the pixels below, so the content stays
 // readable. Dots pushed toward the center shrink and vanish instead of
 // covering it, dots pushed outward leave the screen.
-static const int CUE_ROWS = 7;                // dots per column
-static const int CUE_COLS[] = {5, 15};        // columns, distance from the edge
+static const int CUE_ROWS = 7;                // dots per edge
+static const int CUE_COL = 8;                 // distance from the edge
 static const float CUE_R = 3;                 // radius at rest
 static const float CUE_PX_PER_G = 60;         // shift per g
 static const float CUE_MAX_PX = 30;
@@ -2131,12 +2175,10 @@ static void drawMotionCues() {
     float inward = side == 0 ? dx : -dx;
     float r = CUE_R * presence * (1 - max(inward, 0.0f) / CUE_VANISH_PX);
     if (r <= 0) continue;
-    for (int c = 0; c < 2; c++) {
-      int x = lroundf(side == 0 ? CUE_COLS[c] + dx : w - 1 - CUE_COLS[c] + dx);
-      for (int i = 0; i < CUE_ROWS; i++) {
-        float y = fmodf(spacing * (i + 0.5f + c * 0.5f) + dy + 2 * h, h);  // inner column staggered
-        invertDot(x, lroundf(y), r);
-      }
+    int x = lroundf(side == 0 ? CUE_COL + dx : w - 1 - CUE_COL + dx);
+    for (int i = 0; i < CUE_ROWS; i++) {
+      float y = fmodf(spacing * (i + 0.5f) + dy + 2 * h, h);
+      invertDot(x, lroundf(y), r);
     }
   }
 }

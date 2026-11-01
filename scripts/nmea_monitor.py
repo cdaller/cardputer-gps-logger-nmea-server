@@ -1,9 +1,14 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["pyserial"]
+# ///
 """Shows position, altitude and speed from the GPS logger's USB serial NMEA output
 (setting "NMEA serial" / nmea_serial=1), plus acceleration if calibrated.
 
-    pip install pyserial
-    python3 scripts/nmea_monitor.py [port]     # port default: first /dev/cu.usbmodem* or /dev/ttyACM*
+    ./scripts/nmea_monitor.py [port]     # port default: first /dev/cu.usbmodem* or /dev/ttyACM*
+
+Needs uv (https://docs.astral.sh/uv/), which installs pyserial on the first start.
 """
 import glob
 import sys

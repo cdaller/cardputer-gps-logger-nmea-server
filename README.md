@@ -340,12 +340,12 @@ $IIXDR,G,0.120,,ACCLON,G,-0.050,,ACCLAT,G,0.010,,ACCVERT*hh
 know these transducer names ignore the sentence.
 
 `scripts/nmea_monitor.py` shows time, position, altitude, speed and acceleration in the
-terminal:
+terminal. It runs with [uv](https://docs.astral.sh/uv/) (`brew install uv`), which fetches
+pyserial by itself on the first start:
 
 ```sh
-pip install pyserial    # or use ~/.platformio/penv/bin/python, which has it
-python3 scripts/nmea_monitor.py              # first usbmodem / ttyACM port
-python3 scripts/nmea_monitor.py /dev/cu.usbmodem1101
+./scripts/nmea_monitor.py                    # first usbmodem / ttyACM port
+./scripts/nmea_monitor.py /dev/cu.usbmodem1101
 ```
 
 ## Log modes
@@ -415,7 +415,9 @@ forward and the gyroscope offset (settings show `on (calibrate)`, `on (learning)
   the speed before the gap within about a minute, so a small error can't add up.
 * **Altitude**: changes with the slope seen by the accelerometer.
 
-The status bar shows `DR` and the seconds since the last fix. Estimated points follow the
+The status bar shows `DR` and the seconds since the last fix. Position, speed, direction and
+altitude on the main, big and current track map pages show the estimate, marked with an
+orange circled `i`. Estimated points follow the
 log mode like GPS points. They are kept in RAM (up to 200) until the fix is back; then the
 difference between the estimate and the fix is spread over them by time, so the track
 joins the real position without a jump. Logging stopped, deep sleep or a full buffer write
@@ -428,7 +430,7 @@ distance driven without fix, more with speed changes in the tunnel.
 ### Motion cues
 
 Against motion sickness, like the "Vehicle Motion Cues" of the iPhone: with
-`motion_cues=1` (settings: *Motion cues*) two columns of dots run along the left and right
+`motion_cues=1` (settings: *Motion cues*) a column of seven dots runs along the left and right
 edge of the screen on every page while the vehicle moves. They move against the
 acceleration, as loose objects would: down when accelerating, up when braking, to the left
 in a right turn (the top of the screen counts as forward). Dots pushed toward the center
