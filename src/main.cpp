@@ -278,6 +278,9 @@ static void nmeaSink(char c) {
 static void startGps() {
   gps.begin(cfg.gpsRx, cfg.gpsTx, effectiveBaud());
   gps.setRawSink(nmeaSink);
+  // CASIC modules keep their output config; other firmware (e.g. Meshtastic) may have
+  // reduced it to GGA + RMC. Enable GGA, GSA, GSV, RMC for the satellite pages.
+  if (cfg.gpsModule <= GPS_UNIT_AT6558) gps.sendCommand("PCAS03,1,0,1,1,1,0,0,0,0,0,,,0,0");
 }
 
 // UTC date/time from the GPS shifted by the configured offset (incl. daylight saving).
