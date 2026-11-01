@@ -32,6 +32,7 @@ static const uint8_t TCA8418_ADDR = 0x34;           // ADV keyboard controller
 
 static const uint32_t MIN_SLEEP_INTERVAL_SEC = 15;  // below this, deep sleep is not worth it
 static const uint32_t MIN_SLEEP_MS = 3000;
+static const uint16_t SLEEP_SCREEN_SEC = 10;        // screen timeout while deep sleep is possible
 static const int MAX_SD_ERRORS = 3;                 // failed writes in a row until logging stops
 static const float HDOP_UERE_M = 5.0f;              // for the accuracy estimate
 static const uint32_t RTC_MAGIC = 0x47504C31;
@@ -216,6 +217,13 @@ static bool canDeepSleep() {
   return rtc.logging && cfg.deepSleep && cfg.logMode == LOG_MODE_TIME &&
          cfg.logIntervalSec >= MIN_SLEEP_INTERVAL_SEC && sdOk &&
          !cfg.nmeaServer && !cfg.nmeaSerial;  // WiFi / USB would be off while sleeping
+}
+
+// While deep sleep is possible, the screen goes off (and the device to sleep)
+// after a short time, also with a longer or no screen timeout set.
+static uint32_t screenTimeoutSec() {
+  uint32_t s = cfg.screenTimeoutSec;
+  return canDeepSleep() && (s == 0 || s > SLEEP_SCREEN_SEC) ? SLEEP_SCREEN_SEC : s;
 }
 
 static uint32_t effectiveBaud() {
@@ -1145,7 +1153,11 @@ static String settingValue(int id) {
       if (cfg.nmeaSerial) return "on (serial on)";
       if (cfg.logMode != LOG_MODE_TIME) return "on (time mode)";
       return cfg.logIntervalSec >= MIN_SLEEP_INTERVAL_SEC ? "on" : "on (int<15s)";
-    case S_SCREEN: return secondsText(cfg.screenTimeoutSec);
+    case S_SCREEN: {
+      String s = secondsText(cfg.screenTimeoutSec);
+      if (screenTimeoutSec() != cfg.screenTimeoutSec) s += " (sleep " + secondsText(screenTimeoutSec()) + ")";
+      return s;
+    }
     case S_FIXTO: return secondsText(cfg.fixTimeoutSec);
     case S_MODULE: {
       String s = GPS_PRESETS[cfg.gpsModule].name;
@@ -2535,6 +2547,9 @@ static void handleKey(char c, bool enter, bool del, bool tab) {
 }
 
 static void handleInput() {
+  // G0 held since the start, e.g. to wake from deep sleep: its press must not
+  // count as hold (start / stop logging) or click.
+  static bool btnAFromStart = true;
   bool activity = false;
   bool wasOn = screenOn;  // a key that turns the screen off must not wake it again
 
@@ -2558,7 +2573,9 @@ static void handleInput() {
     }
   }
 
-  if (M5.BtnA.wasHold()) {
+  if (btnAFromStart) {
+    if (M5.BtnA.isReleased()) btnAFromStart = false;
+  } else if (M5.BtnA.wasHold()) {
     activity = true;
     if (screenOn && !(page == PAGE_SETTINGS && editing)) rtc.logging ? stopLogging() : startLogging();
   } else if (M5.BtnA.wasClicked()) {
@@ -2737,8 +2754,8 @@ void loop() {
   }
 
   // Screen timeout: deep sleep between points if possible, otherwise screen off
-  if (cfg.screenTimeoutSec && !keepScreenOn && page != PAGE_SETTINGS &&
-      now - lastInputMs > cfg.screenTimeoutSec * 1000UL) {
+  if (screenTimeoutSec() && !keepScreenOn && page != PAGE_SETTINGS &&
+      now - lastInputMs > screenTimeoutSec() * 1000UL) {
     if (canDeepSleep() && lastLogMs) {
       uint32_t ms = remainingIntervalMs(now - lastLogMs);
       // Point overdue without fix: sleep and let the timer wake retry with fix_timeout

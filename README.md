@@ -418,7 +418,8 @@ server on or while deep sleep is active. The motion thresholds are first estimat
 
 With `deep_sleep=1`, logging active in time mode, an interval of at least 15 s and neither the
 NMEA server nor the serial NMEA output on, the device goes
-to deep sleep after `screen_timeout` seconds without input. It then wakes up by timer for
+to deep sleep after 10 s without input (or `screen_timeout` if shorter; the settings show
+`(sleep 10 s)` next to it). It then wakes up by timer for
 each point, reads the GPS (display stays off), writes the point and sleeps again. If no fix
 is found within `fix_timeout` seconds, that point is skipped. Press **G0** to get the UI back.
 
