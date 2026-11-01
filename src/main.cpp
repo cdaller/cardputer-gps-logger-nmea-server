@@ -70,9 +70,9 @@ static const uint32_t LED_PERIOD_MS = 60000;
 static const uint32_t LED_FADE_MS = 1000;
 static const uint8_t LED_MAX = 160;  // of 255, red
 
-// Survives deep sleep and software resets (not power-on). NOINIT: started from
-// M5Launcher, a deep sleep wake-up boots the launcher first, which then restarts
-// into this app; the bootloader would reset RTC_DATA_ATTR variables on that restart.
+// Survives deep sleep and software resets (not power-on). NOINIT: installed via
+// M5Launcher, its bootloader starts this app after a deep sleep wake-up, and
+// RTC_DATA_ATTR variables didn't survive that.
 struct RtcState {
   uint32_t magic;
   bool logging;
@@ -2770,8 +2770,8 @@ void setup() {
     memset(&rtc, 0, sizeof(rtc));
     rtc.magic = RTC_MAGIC;
   }
-  // Timer wake-up: directly, or through M5Launcher's restart (wake cause lost,
-  // but the planned wake-up time has passed; a G0 wake-up comes before it).
+  // Timer wake-up, also if the wake cause got lost on the way (M5Launcher's
+  // bootloader): the planned wake-up time has passed; a G0 wake-up comes before it.
   bool timerWake = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER ||
                    (rtc.wakeAtMs && rtcNowMs() >= rtc.wakeAtMs);
   if (timerWake && rtc.logging) quietWakeCycle();  // returns only for UI
