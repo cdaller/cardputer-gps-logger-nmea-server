@@ -33,6 +33,7 @@ static const uint8_t TCA8418_ADDR = 0x34;           // ADV keyboard controller
 
 static const uint32_t MIN_SLEEP_INTERVAL_SEC = 15;  // below this, deep sleep is not worth it
 static const uint32_t MIN_SLEEP_MS = 3000;
+static const uint32_t WAKE_SETTLE_MS = 3000;        // fix held this long after a wake-up before logging
 static const uint16_t SLEEP_SCREEN_SEC = 10;        // screen timeout while deep sleep is possible
 static const int MAX_SD_ERRORS = 3;                 // failed writes in a row until logging stops
 static const float HDOP_UERE_M = 5.0f;              // for the accuracy estimate
@@ -40,6 +41,9 @@ static const uint32_t RTC_MAGIC = 0x47504C31;
 
 // Recording filter. A fix with a worse HDOP than this (~25 m) is never recorded.
 static const float MAX_HDOP = 5.0f;
+// A point needs the GGA (altitude, HDOP) and RMC (speed, course) of the same fix:
+// both younger than this. Right after waking, an RMC fix comes before the GGA has one.
+static const uint32_t FIX_SENTENCE_MAX_AGE_MS = 500;
 // Smart mode: a point at turns and speed changes, but not for moves below
 // the fix accuracy (noise), and at least every SMART_MAX_SEC / SMART_MAX_DIST_M.
 static const float SMART_MIN_DIST_M = 5;
@@ -301,12 +305,15 @@ static bool localTime(struct tm& out, int16_t& offsetMin) {
   return true;
 }
 
-// False without a fix, and for a fix that was already used: the loop may come
-// back before the GPS has sent the next one.
+// False without a fix, before both GGA and RMC of the fix are in, and for a fix
+// that was already used: the loop may come back before the GPS has sent the next one.
 static bool buildPoint(LogPoint& p, int batteryPct) {
   static uint32_t lastDate = 0, lastTime = 0;
   TinyGPSPlus& g = gps.gps();
   if (!gps.hasFix() || !g.date.isValid() || !g.time.isValid() || g.date.year() < 2020) return false;
+  if (!g.altitude.isValid() || g.altitude.age() > FIX_SENTENCE_MAX_AGE_MS || !g.speed.isValid() ||
+      g.speed.age() > FIX_SENTENCE_MAX_AGE_MS)
+    return false;  // not marked as used: the other sentence of this fix may follow
   if (g.date.value() == lastDate && g.time.value() == lastTime) return false;
   lastDate = g.date.value();
   lastTime = g.time.value();
@@ -588,11 +595,14 @@ static void quietWakeCycle() {
   startGps();
 
   LogResult result = LOG_NO_FIX;
+  uint32_t fixSinceMs = 0;  // the first fixes after waking can be off by tens of metres
   while (awakeMs() < cfg.fixTimeoutSec * 1000UL) {
     gps.update();
     if (gps.baudLocked() && cfg.gpsBaud == 0) rtc.detectedBaud = gps.baud();
     if (digitalRead(PIN_WAKE_BTN) == LOW) return;
-    if (gps.gps().location.isUpdated()) {
+    if (!gps.hasFix()) fixSinceMs = 0;
+    else if (!fixSinceMs) fixSinceMs = max(millis(), 1UL);
+    if (fixSinceMs && millis() - fixSinceMs >= WAKE_SETTLE_MS && gps.gps().location.isUpdated()) {
       result = logPoint(batteryPctFromMv(batteryMv()));
       // Inaccurate fix: wait for a better one. SD error: try again at the next wake-up.
       if (result != LOG_NO_FIX && result != LOG_SKIPPED) break;

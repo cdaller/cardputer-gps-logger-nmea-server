@@ -449,7 +449,8 @@ With `deep_sleep=1`, logging active in time mode, an interval of at least 15 s a
 NMEA server nor the serial NMEA output on, the device goes
 to deep sleep after 10 s without input (or `screen_timeout` if shorter; the settings show
 `(sleep 10 s)` next to it). It then wakes up by timer for
-each point, reads the GPS (display stays off), writes the point and sleeps again. If no fix
+each point, reads the GPS (display stays off), writes the point and sleeps again. The first
+fixes after waking can be off, so the point is taken once the fix has held for 3 s. If no fix
 is found within `fix_timeout` seconds, that point is skipped. Press **G0** to get the UI back.
 
 The GPS module itself stays powered so it keeps a hot fix; it consumes far more power than
