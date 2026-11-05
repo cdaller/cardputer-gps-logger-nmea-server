@@ -1823,23 +1823,29 @@ static int drawTrackValue(int x, int y, const char* label, const String& value, 
   return x + canvas.textWidth(value);
 }
 
-// Map zoom and pan. At zoom 1 the whole track is shown and the arrow keys
-// switch pages; zoomed in they pan. The current track's map follows the
-// latest point until it is panned.
+// Map zoom and pan. At first the whole track is shown and the arrow keys
+// switch pages; once zoomed they pan, until Esc shows the whole track again.
+// The current track's map follows the latest point until it is panned.
 // Time cursor ([ ]) on the altitude profile and the map, kept as a time so it
 // stays on its point when the current track grows or gets thinned out.
 static const int MAP_X = 4, MAP_Y = 21, MAP_W = 232, MAP_H = 95;
-static const uint8_t MAP_MAX_ZOOM = 64;
+static const int8_t MAP_MAX_ZOOM_EXP = 6;  // x64 in, x1/64 out
 static const int PROFILE_X = 3, PROFILE_W = 234;
 struct MapView {
-  uint8_t zoom;
+  int8_t zoomExp;  // zoom 2^zoomExp, relative to the whole track
+  bool zoomed;     // zoomed or panned: the arrow keys pan, Esc resets
   bool follow;     // current track: centered on the latest point
   float lat, lon;  // center while zoomed
   bool cursor;
   time_t cursorTime;
 };
-static MapView trackView = {1, false, 0, 0, false, 0};
-static MapView liveView = {1, true, 0, 0, false, 0};
+static MapView trackView = {0, false, false, 0, 0, false, 0};
+static MapView liveView = {0, false, true, 0, 0, false, 0};
+
+static float zoomFactor(const MapView& v) { return ldexpf(1, v.zoomExp); }
+static String zoomText(const MapView& v) {
+  return v.zoomExp >= 0 ? "x" + String(1 << v.zoomExp) : "x1/" + String(1 << -v.zoomExp);
+}
 
 // Point nearest to the cursor time; the points are in time order.
 static int cursorIndex(const tracks::Track& t, time_t time) {
@@ -1867,7 +1873,7 @@ static bool cursorKey(MapView& v, const tracks::Track& t, char c) {
   int i = !v.cursor ? (dir < 0 ? t.n - 1 : 0) : constrain(cursorIndex(t, v.cursorTime) + dir * step, 0, t.n - 1);
   v.cursor = true;
   v.cursorTime = t.pts[i].time;
-  if (v.zoom > 1) {
+  if (v.zoomed) {
     v.follow = false;
     v.lat = t.pts[i].lat;
     v.lon = t.pts[i].lon;
@@ -1955,22 +1961,20 @@ static float mapFitScale(const tracks::Bounds& b, float& cosLat) {
 // latest: the newest point of the current track, nullptr for a stored track.
 static bool mapKey(MapView& v, const tracks::Bounds& b, const tracks::Point* latest, char c) {
   float cosLat, scale = mapFitScale(b, cosLat);
-  if (c == '=') {
-    if (v.zoom == 1) {  // start at the middle, or at the latest point when following
+  if (c == '=' || c == '-') {
+    if (scale <= 0) return true;  // a single position
+    if (!v.zoomed) {  // start at the middle, or at the latest point when following
       v.lat = (b.latMin + b.latMax) / 2;
       v.lon = (b.lonMin + b.lonMax) / 2;
+      v.zoomed = true;
     }
-    if (v.zoom < MAP_MAX_ZOOM && scale > 0) v.zoom *= 2;
+    v.zoomExp = constrain(v.zoomExp + (c == '=' ? 1 : -1), -MAP_MAX_ZOOM_EXP, MAP_MAX_ZOOM_EXP);
     return true;
   }
-  if (c == '-') {
-    if (v.zoom > 1) v.zoom /= 2;
-    if (v.zoom == 1) v.follow = latest;
-    return true;
-  }
-  if (v.zoom == 1) return false;
+  if (!v.zoomed) return false;
   if (c == '`') {
-    v.zoom = 1;
+    v.zoomExp = 0;
+    v.zoomed = false;
     v.follow = latest;
     return true;
   }
@@ -1985,7 +1989,7 @@ static bool mapKey(MapView& v, const tracks::Bounds& b, const tracks::Point* lat
     v.lon = latest->lon;
   }
   v.follow = false;
-  float s = scale * v.zoom;  // a quarter of the map per key
+  float s = scale * zoomFactor(v);  // a quarter of the map per key
   v.lon += dx * (MAP_W / 4.0f) / (s * cosLat);
   v.lat += dy * (MAP_H / 4.0f) / s;
   return true;
@@ -1995,12 +1999,12 @@ static bool mapKey(MapView& v, const tracks::Bounds& b, const tracks::Point* lat
 // speed; north is up, equal scale in both directions, the bounds fitted into
 // the map at zoom 1. t: nullptr for the current track map without a track.
 static void drawMap(const tracks::Bounds& b, const MapView& v, const tracks::Point* latest, const tracks::Track* t) {
-  float cosLat, scale = mapFitScale(b, cosLat) * v.zoom;
+  float cosLat, scale = mapFitScale(b, cosLat) * zoomFactor(v);
   float cLat = (b.latMin + b.latMax) / 2, cLon = (b.lonMin + b.lonMax) / 2;
-  if (v.zoom > 1 && v.follow && latest) {
+  if (v.zoomed && v.follow && latest) {
     cLat = latest->lat;
     cLon = latest->lon;
-  } else if (v.zoom > 1) {
+  } else if (v.zoomed) {
     cLat = v.lat;
     cLon = v.lon;
   }
@@ -2031,9 +2035,9 @@ static void drawMap(const tracks::Bounds& b, const MapView& v, const tracks::Poi
   if (t && v.cursor) {  // the point at the cursor instead of the color legend, zoom only if zoomed
     canvas.setTextColor(TFT_WHITE);
     canvas.drawString(cursorText(*t, v), 3, 119);
-    if (v.zoom > 1) {
+    if (v.zoomed) {
       canvas.setTextDatum(top_right);
-      canvas.drawString("x" + String(v.zoom), 236, 119);
+      canvas.drawString(zoomText(v), 236, 119);
       canvas.setTextDatum(top_left);
     }
     return;
@@ -2057,9 +2061,9 @@ static void drawMap(const tracks::Bounds& b, const MapView& v, const tracks::Poi
   if (scale > 0) {  // width of the map area, 1 degree latitude = 111.32 km
     float km = MAP_W / scale * 111.32f;
     String width = (km < 1 ? String(km * 1000, 0) + " m" : String(km, 1) + " km");
-    if (v.zoom > 1) width = String(latest && !v.follow ? "F follow  " : "") + "x" + String(v.zoom) + "  " + width;
+    if (v.zoomed) width = String(latest && !v.follow ? "F follow  " : "") + zoomText(v) + "  " + width;
     else width = "width " + width;
-    canvas.setTextColor(v.zoom > 1 ? TFT_WHITE : COL_LABEL);
+    canvas.setTextColor(v.zoomed ? TFT_WHITE : COL_LABEL);
     canvas.setTextDatum(top_right);
     canvas.drawString(width, 236, 119);
     canvas.setTextDatum(top_left);
@@ -2072,7 +2076,7 @@ static void drawTrackInfoPage() {
 }
 
 static void drawTrackMapPage() {
-  drawTitleBar(trackFiles[trackSel].name, trackView.zoom > 1 ? "` reset" : "=- zoom I info");
+  drawTitleBar(trackFiles[trackSel].name, trackView.zoomed ? "` reset" : "=- zoom I info");
   drawMap(trackBounds(track), trackView, nullptr, &track);
 }
 
@@ -2085,7 +2089,7 @@ static void updateLiveTrack() {
     liveState = {};
     strlcpy(liveBase, rtc.baseName, sizeof(liveBase));
     livePoints = 0;
-    liveView = {1, true, 0, 0, false, 0};
+    liveView = {0, false, true, 0, 0, false, 0};
   }
   if (rtc.points == livePoints || (livePoints && millis() - liveReadMs < LIVE_READ_MS)) return;
   bool gpx = cfg.logFormat == LOG_GPX;
@@ -2131,7 +2135,7 @@ static bool liveMapContent(tracks::Bounds& b, const tracks::Point*& latest) {
 }
 
 static void drawLivePage(bool map) {
-  drawTitleBar("CURRENT TRACK", !map ? "C color . map" : liveView.zoom > 1 ? "` reset" : "=- zoom ; info");
+  drawTitleBar("CURRENT TRACK", !map ? "C color . map" : liveView.zoomed ? "` reset" : "=- zoom ; info");
   canvas.setFont(&fonts::Font2);
   canvas.setTextColor(COL_LABEL);
   tracks::Bounds b;
@@ -2438,7 +2442,7 @@ static void openTrack(Page p) {
     showStatus("Reading track...", 60000);
     draw();
     bool ok = tracks::load(f, track);
-    trackView = {1, false, 0, 0, false, 0};
+    trackView = {0, false, false, 0, 0, false, 0};
     statusMsgUntil = 0;
     if (!ok) { showStatus("No track points found"); return; }
   }
