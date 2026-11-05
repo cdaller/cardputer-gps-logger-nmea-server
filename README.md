@@ -461,9 +461,11 @@ power. With intervals below 15 s only the screen is switched off.
 From fully loaded battery to the last entry written in the log files:
 * more or less always the same path (home to office, to lunch)
 
-| filename        | log interval                       | logs     | num points | deep sleep | duration |
-| --------------- | ---------------------------------- | -------- | ---------- | ---------- | -------- |
-| 20261022_055513 | 5 sec                              | csv, gpx | 5554       | off        | 6h 15min |
-| 20261023_055708 | 30 sec                             | csv, gpx | 994        | off        | 7h 25min |
-| 20261028_070105 | auto (most of the time in standby) | csv, gpx | 220        | off        | 4h 46min |
-| 20261029_083252 | 5min                               | csv, gpx | 19         | off        | 4h 46min |
+| filename        | log interval                       | logs     | num points | deep sleep | duration  |
+| --------------- | ---------------------------------- | -------- | ---------- | ---------- | --------- |
+| 20261022_055513 | 5 sec                              | csv, gpx | 5554       | off        |  6h 15min |
+| 20261023_055708 | 30 sec                             | csv, gpx | 994        | off        |  7h 25min |
+| 20261028_070105 | auto (most of the time in standby) | csv, gpx | 220        | off        |  4h 46min |
+| 20261029_083252 | 5min                               | csv, gpx | 19         | off        |  4h 46min |
+| 20261102_071343 | 5min                               | csv, gpx | 44         | on         | 15h 06min |
+| 20261104_06597x | 1min                               | csv, gpx | 150        | on         | 18h 28min |
